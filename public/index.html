@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#7c3aed" />
+    <title>Bracelet Buddy</title>
+
+    <!-- PWA manifest - see public/manifest.json -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Icon used when installed to a home screen. Replace with real art
+         once available - see the note in public/manifest.json. -->
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="icon" href="/favicon.ico" />
+
+    <script>
+      // Only register the service worker outside of local dev. In dev, a
+      // cached service worker can serve a stale JS bundle and make it look
+      // like code changes aren't taking effect. To actually test offline
+      // behavior, build + serve a production export instead (see notes).
+      var isLocalDev =
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1';
+
+      if (!isLocalDev && 'serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker
+            .register('/sw.js')
+            .then(function (registration) {
+              console.log('[pwa] service worker registered:', registration.scope);
+            })
+            .catch(function (error) {
+              console.error('[pwa] service worker registration failed:', error);
+            });
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Expo's Metro bundler automatically injects the app's <script> tag(s)
+         into this document at build/dev time - nothing else needed here. -->
+  </body>
+</html>
