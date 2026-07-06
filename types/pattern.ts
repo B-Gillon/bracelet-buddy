@@ -21,3 +21,8 @@ export function createEmptyGrid(cols: number, rows: number): PatternGrid {
 export function defaultPatternName(existingCount: number): string {
   return 'Bracelet #' + (existingCount + 1);
 }
+
+export interface DualGrid {
+  main: PatternGrid;
+  gap:  PatternGrid;
+}

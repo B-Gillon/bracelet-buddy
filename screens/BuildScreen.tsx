@@ -1,9 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
 import Svg, { Rect, Polygon } from 'react-native-svg';
-import { PatternConfig, PatternGrid, createEmptyGrid } from '../types/pattern';
+import { PatternConfig, PatternGrid, DualGrid, createEmptyGrid } from '../types/pattern';
 import ColorPickerScreen from './ColorPickerScreen';
 import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from '../utils/storage';
+import { useAuth } from '../context/AuthContext';
+import { savePattern } from '../utils/patterns';
+import { CellInfo, buildCells } from '../utils/diamondGrid';
 
 const EMPTY_FILL = '#f0efeb';
 const STROKE     = '#c8c6bc';
@@ -12,53 +15,30 @@ const PURPLE     = '#7c3aed';
 
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-type CellInfo = {
-  key:    string;
-  cx:     number;
-  cy:     number;
-  pass:   'main' | 'gap';
-  gr:     number;
-  gc:     number;
-  points: string;
+const titleInputStyle: React.CSSProperties = {
+  fontSize: 18,
+  fontWeight: 700,
+  color: '#111',
+  border: 'none',
+  background: 'transparent',
+  padding: 0,
+  minWidth: 160,
+  maxWidth: 320,
 };
 
-function buildCells(mainRows: number, mainCols: number, D: number): CellInfo[] {
-  const H = D / 2;
-  const cells: CellInfo[] = [];
-
-  function pts(cx: number, cy: number): string {
-    return (
-      cx + ',' + (cy - H) + ' ' +
-      (cx + H) + ',' + cy + ' ' +
-      cx + ',' + (cy + H) + ' ' +
-      (cx - H) + ',' + cy
-    );
-  }
-
-  for (let dr = 0; dr < mainRows; dr++) {
-    for (let dc = 0; dc < mainCols; dc++) {
-      const cx = dc * D + H;
-      const cy = dr * D + H;
-      cells.push({ key: 'main-' + dr + '-' + dc, cx, cy, pass: 'main', gr: dr, gc: dc, points: pts(cx, cy) });
-    }
-  }
-
-  const gapRows = mainRows + 1;
-  const gapCols = mainCols + 1;
-  for (let dr = 0; dr < gapRows; dr++) {
-    for (let dc = 0; dc < gapCols; dc++) {
-      const cx = dc * D;
-      const cy = dr * D;
-      cells.push({ key: 'gap-' + dr + '-' + dc, cx, cy, pass: 'gap', gr: dr, gc: dc, points: pts(cx, cy) });
-    }
-  }
-
-  return cells;
-}
-
-type DualGrid = {
-  main: PatternGrid;
-  gap:  PatternGrid;
+const saveAsNewInputStyle: React.CSSProperties = {
+  boxSizing: 'border-box',
+  height: 40,
+  borderRadius: 8,
+  border: '1px solid #e5e7eb',
+  backgroundColor: '#fff',
+  paddingLeft: 12,
+  paddingRight: 12,
+  fontSize: 14,
+  color: '#111',
+  width: '100%',
+  marginTop: 4,
+  marginBottom: 4,
 };
 
 function createDualGrid(mainRows: number, mainCols: number): DualGrid {
@@ -210,11 +190,17 @@ export default function BuildScreen({
   config,
   onConfigChange,
   onExit,
+  onRequireAccount,
 }: {
-  config:         PatternConfig;
-  onConfigChange: (config: PatternConfig) => void;
-  onExit:         () => void;
+  config:           PatternConfig;
+  onConfigChange:   (config: PatternConfig) => void;
+  onExit:           () => void;
+  onRequireAccount: () => void;
 }) {
+  const { user } = useAuth();
+  const isSignedIn = !!user;
+
+  const [name, setName]                         = useState(config.name);
   const [dualGrid, setDualGrid]                 = useState<DualGrid>(() => createDualGrid(config.rows, config.cols));
   const [palette, setPalette]                   = useState<(string | null)[]>(config.palette);
   const [selectedColorIdx, setSelectedColorIdx] = useState(0);
@@ -224,6 +210,13 @@ export default function BuildScreen({
   const [fitToWindow, setFitToWindow]           = useState(false);
   const [gridViewportWidth, setGridViewportWidth] = useState(0);
   const [showStartOverConfirm, setShowStartOverConfirm] = useState(false);
+  const [showAccountRequiredModal, setShowAccountRequiredModal] = useState(false);
+  const [showSaveAsNewModal, setShowSaveAsNewModal] = useState(false);
+  const [saveAsNewName, setSaveAsNewName]       = useState('');
+  const [showSavedModal, setShowSavedModal]     = useState(false);
+  const [savedModalMode, setSavedModalMode]     = useState<'ask' | 'coming-soon'>('ask');
+  const [isSavingCloud, setIsSavingCloud]       = useState(false);
+  const [cloudSaveError, setCloudSaveError]     = useState<string | null>(null);
   const [hydrated, setHydrated]                 = useState(false);
   const saveTimeoutRef                          = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -368,8 +361,69 @@ export default function BuildScreen({
     setDualGrid(createDualGrid(config.rows, config.cols));
   }
 
-  function handleSave() {
-    onConfigChange({ ...config, palette, updatedAt: Date.now() });
+  async function handleSave() {
+    // Local save always happens first, and always succeeds - this is the
+    // part the offline-first design depends on, and it's never blocked by
+    // the cloud sync below.
+    const updatedConfig: PatternConfig = { ...config, name, palette, updatedAt: Date.now() };
+    onConfigChange(updatedConfig);
+
+    if (!user) return; // handleSavePress already gates this - just a safety net
+
+    setIsSavingCloud(true);
+    setCloudSaveError(null);
+    const { error } = await savePattern(user.id, updatedConfig, dualGrid);
+    setIsSavingCloud(false);
+
+    if (error) setCloudSaveError(error);
+    setSavedModalMode('ask');
+    setShowSavedModal(true);
+  }
+
+  function handleSavePress() {
+    if (!isSignedIn) {
+      setShowAccountRequiredModal(true);
+      return;
+    }
+    handleSave();
+  }
+
+  function openSaveAsNew() {
+    if (!isSignedIn) {
+      setShowAccountRequiredModal(true);
+      return;
+    }
+    setSaveAsNewName(`${name} copy`);
+    setShowSaveAsNewModal(true);
+  }
+
+  async function handleSaveAsNew() {
+    if (!user) return;
+
+    const now = Date.now();
+    const newConfig: PatternConfig = {
+      ...config,
+      id: String(now),
+      name: saveAsNewName.trim() || `${name} copy`,
+      palette,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setShowSaveAsNewModal(false);
+    setIsSavingCloud(true);
+    setCloudSaveError(null);
+    const { error } = await savePattern(user.id, newConfig, dualGrid);
+    setIsSavingCloud(false);
+    if (error) setCloudSaveError(error);
+
+    // Mirror "Save As" convention: focus switches to the new copy going
+    // forward. The original pattern's saved row is left completely
+    // untouched.
+    setName(newConfig.name);
+    onConfigChange(newConfig);
+    setSavedModalMode('ask');
+    setShowSavedModal(true);
   }
 
   if (showColorPicker) {
@@ -390,7 +444,16 @@ export default function BuildScreen({
   const header = (
     <View style={s.header}>
       <View style={s.headerTopRow}>
-        <Text style={s.title}>{config.name}</Text>
+        <input
+          type="text"
+          value={name}
+          onChange={e => {
+            const newName = e.target.value;
+            setName(newName);
+            onConfigChange({ ...config, name: newName });
+          }}
+          style={titleInputStyle}
+        />
       </View>
 
       <View style={s.colorsRow}>
@@ -495,8 +558,16 @@ export default function BuildScreen({
             <Text style={s.toolbarBtnTxt}>Clear</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={[s.toolbarBtn, s.saveBtn]} onPress={handleSave}>
-            <Text style={s.saveBtnTxt}>Save</Text>
+          <TouchableOpacity style={s.toolbarBtn} onPress={openSaveAsNew}>
+            <Text style={s.toolbarBtnTxt}>Save As New</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[s.toolbarBtn, s.saveBtn, isSavingCloud && s.toolbarBtnDisabled]}
+            onPress={handleSavePress}
+            disabled={isSavingCloud}
+          >
+            <Text style={s.saveBtnTxt}>{isSavingCloud ? 'Saving...' : 'Save'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -565,6 +636,125 @@ export default function BuildScreen({
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showAccountRequiredModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAccountRequiredModal(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>Create an Account to Save</Text>
+            <Text style={s.modalText}>
+              You need an account to save your pattern. It only takes a minute, and you can keep designing here in the meantime.
+            </Text>
+            <View style={s.modalButtonsRow}>
+              <TouchableOpacity
+                style={s.modalCancelBtn}
+                onPress={() => setShowAccountRequiredModal(false)}
+              >
+                <Text style={s.modalCancelTxt}>Not Now</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={s.modalConfirmAccentBtn}
+                onPress={() => {
+                  setShowAccountRequiredModal(false);
+                  onRequireAccount();
+                }}
+              >
+                <Text style={s.modalConfirmTxt}>Create Account</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSaveAsNewModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSaveAsNewModal(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>Save As New Pattern</Text>
+            <Text style={s.modalText}>
+              This creates a brand new copy - your original pattern won't be changed.
+            </Text>
+            <input
+              type="text"
+              value={saveAsNewName}
+              onChange={e => setSaveAsNewName(e.target.value)}
+              style={saveAsNewInputStyle}
+            />
+            <View style={s.modalButtonsRow}>
+              <TouchableOpacity
+                style={s.modalCancelBtn}
+                onPress={() => setShowSaveAsNewModal(false)}
+              >
+                <Text style={s.modalCancelTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={handleSaveAsNew}>
+                <Text style={s.modalConfirmTxt}>Save Copy</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSavedModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSavedModal(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            {savedModalMode === 'ask' ? (
+              <>
+                <Text style={s.modalTitle}>
+                  {cloudSaveError ? 'Saved on This Device' : 'Saved!'}
+                </Text>
+                <Text style={s.modalText}>
+                  {cloudSaveError
+                    ? "We'll sync it online once you're connected again. Want to build this bracelet now?"
+                    : 'Want to build this bracelet now?'}
+                </Text>
+                <View style={s.modalButtonsRow}>
+                  <TouchableOpacity
+                    style={s.modalCancelBtn}
+                    onPress={() => setShowSavedModal(false)}
+                  >
+                    <Text style={s.modalCancelTxt}>Not Now</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={s.modalConfirmAccentBtn}
+                    onPress={() => setSavedModalMode('coming-soon')}
+                  >
+                    <Text style={s.modalConfirmTxt}>Yes, Build It!</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={s.modalTitle}>Coming Soon!</Text>
+                <Text style={s.modalText}>
+                  The step-by-step building guide isn't ready yet - check back soon!
+                </Text>
+                <View style={s.modalButtonsRow}>
+                  <TouchableOpacity
+                    style={s.modalConfirmAccentBtn}
+                    onPress={() => setShowSavedModal(false)}
+                  >
+                    <Text style={s.modalConfirmTxt}>Got It</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -598,6 +788,7 @@ const s = StyleSheet.create({
   modalCancelBtn:     { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: '#fafafa' },
   modalCancelTxt:     { fontSize: 13, fontWeight: '600', color: '#374151' },
   modalConfirmBtn:    { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: '#dc2626' },
+  modalConfirmAccentBtn: { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: PURPLE },
   modalConfirmTxt:    { fontSize: 13, fontWeight: '700', color: '#fff' },
   toolbarBtnTxt:      { fontSize: 12, fontWeight: '600', color: '#374151' },
   saveBtn:            { backgroundColor: PURPLE, borderColor: PURPLE },
