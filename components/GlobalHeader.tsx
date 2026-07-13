@@ -119,7 +119,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 24,
     borderBottomWidth: 1,
     borderBottomColor: '#e5e7eb',
-    backgroundColor: '#fff',
+    backgroundColor: '#e0f2fe',
   },
   logo: {
     fontSize: 18,

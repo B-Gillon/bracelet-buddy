@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
 import Svg, { Rect, Polygon } from 'react-native-svg';
-import { PatternConfig, PatternGrid, DualGrid, createEmptyGrid } from '../types/pattern';
+import { PatternConfig, PatternGrid, DualGrid, DEFAULT_PATTERN_NAME, createEmptyGrid } from '../types/pattern';
 import ColorPickerScreen from './ColorPickerScreen';
 import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from '../utils/storage';
 import { useAuth } from '../context/AuthContext';
-import { savePattern } from '../utils/patterns';
+import { savePattern, formatPatternNumber } from '../utils/patterns';
 import { CellInfo, buildCells } from '../utils/diamondGrid';
 
 const EMPTY_FILL = '#f0efeb';
@@ -49,13 +49,16 @@ function createDualGrid(mainRows: number, mainCols: number): DualGrid {
 }
 
 function PatternGridView({
-  dualGrid, orientation, onCellPress, onCellDrag, zoom,
+  dualGrid, orientation, onCellPress, onCellDrag, zoom, selRange, pasteMode, clipboardWidth,
 }: {
-  dualGrid:    DualGrid;
-  orientation: 'horizontal' | 'vertical';
-  onCellPress: (pass: 'main' | 'gap', r: number, c: number) => void;
-  onCellDrag:  (pass: 'main' | 'gap', r: number, c: number) => void;
-  zoom:        number;
+  dualGrid:       DualGrid;
+  orientation:    'horizontal' | 'vertical';
+  onCellPress:    (pass: 'main' | 'gap', r: number, c: number) => void;
+  onCellDrag:     (pass: 'main' | 'gap', r: number, c: number) => void;
+  zoom:           number;
+  selRange?:      { lo: number; hi: number } | null;
+  pasteMode?:     boolean;
+  clipboardWidth?: number | null;
 }) {
   const BASE = 40;
   const D    = BASE * zoom;
@@ -75,6 +78,7 @@ function PatternGridView({
   const containerRef = useRef<View>(null);
   const offsetRef    = useRef({ x: 0, y: 0 });
   const lastCellRef  = useRef<string | null>(null);
+  const [hoverCol, setHoverCol] = useState<number | null>(null);
 
   function resolveCell(cell: CellInfo): { r: number; c: number } {
     if (orientation === 'horizontal') {
@@ -116,11 +120,21 @@ function PatternGridView({
   }
 
   function handlePress(evt: any) {
-    const cell = findCell(evt.nativeEvent.pageX, evt.nativeEvent.pageY);
-    if (!cell) return;
-    lastCellRef.current = cell.key;
-    const { r, c } = resolveCell(cell);
-    onCellPress(cell.pass, r, c);
+    const pageX = evt.nativeEvent.pageX;
+    const pageY = evt.nativeEvent.pageY;
+    // Re-measure right now rather than trusting onLayout's cached position -
+    // on web, that measurement doesn't reliably refire just because a
+    // sibling above (the header) changed height and pushed this view down,
+    // only when this view's own size changes. A stale offset here is
+    // exactly what causes clicks to land on the wrong row.
+    containerRef.current?.measureInWindow((x, y) => {
+      offsetRef.current = { x, y };
+      const cell = findCell(pageX, pageY);
+      if (!cell) return;
+      lastCellRef.current = cell.key;
+      const { r, c } = resolveCell(cell);
+      onCellPress(cell.pass, r, c);
+    });
   }
 
   function handleMove(evt: any) {
@@ -131,6 +145,39 @@ function PatternGridView({
     const { r, c } = resolveCell(cell);
     onCellDrag(cell.pass, r, c);
   }
+
+  // Plain browser mouse tracking (not the touch/drag responder system
+  // above), since this needs to fire on pure hover with no click held -
+  // that's what makes a live paste-destination preview possible.
+  function handleHoverMove(evt: any) {
+    if (!pasteMode) return;
+    const cell = findCell(evt.pageX, evt.pageY);
+    if (!cell || cell.pass !== 'main') return;
+    const { c } = resolveCell(cell);
+    setHoverCol(c);
+  }
+  function handleHoverLeave() {
+    setHoverCol(null);
+  }
+
+  // A logical "column" (from selRange, always in dualGrid.main's own
+  // coordinate space) maps to a horizontal band in horizontal orientation,
+  // but to a vertical band of display rows in vertical orientation - since
+  // resolveCell() swaps rows/cols for that mode. This mirrors that same
+  // swap for the selection overlay.
+  const selectionRect = selRange
+    ? orientation === 'horizontal'
+      ? { x: selRange.lo * D, y: 0, width: (selRange.hi - selRange.lo + 1) * D, height: svgHeight }
+      : { x: 0, y: selRange.lo * D, width: svgWidth, height: (selRange.hi - selRange.lo + 1) * D }
+    : null;
+
+  // Shows exactly where a paste would land, following the cursor - same
+  // orientation-aware column-to-band mapping as the selection rect above.
+  const previewRect = (pasteMode && clipboardWidth && hoverCol != null)
+    ? orientation === 'horizontal'
+      ? { x: hoverCol * D, y: 0, width: clipboardWidth * D, height: svgHeight }
+      : { x: 0, y: hoverCol * D, width: svgWidth, height: clipboardWidth * D }
+    : null;
 
   return (
     <View
@@ -172,6 +219,29 @@ function PatternGridView({
           stroke={BORDER}
           strokeWidth={1.25}
         />
+        {selectionRect && (
+          <Rect
+            x={selectionRect.x + 2}
+            y={selectionRect.y + 2}
+            width={selectionRect.width - 4}
+            height={selectionRect.height - 4}
+            fill="none"
+            stroke={PURPLE}
+            strokeWidth={3}
+          />
+        )}
+        {previewRect && (
+          <Rect
+            x={previewRect.x + 2}
+            y={previewRect.y + 2}
+            width={previewRect.width - 4}
+            height={previewRect.height - 4}
+            fill="rgba(124,58,237,0.18)"
+            stroke={PURPLE}
+            strokeWidth={2}
+            strokeDasharray="6,4"
+          />
+        )}
       </Svg>
 
       <View
@@ -181,6 +251,7 @@ function PatternGridView({
         onResponderGrant={handlePress}
         onResponderMove={handleMove}
         onResponderRelease={() => { lastCellRef.current = null; }}
+        {...({ onMouseMove: handleHoverMove, onMouseLeave: handleHoverLeave } as any)}
       />
     </View>
   );
@@ -207,7 +278,7 @@ export default function BuildScreen({
   const [orientation, setOrientation]           = useState<'horizontal' | 'vertical'>('horizontal');
   const [zoomIdx, setZoomIdx]                   = useState(2);
   const [showColorPicker, setShowColorPicker]   = useState(false);
-  const [fitToWindow, setFitToWindow]           = useState(false);
+  const [manualZoomOverride, setManualZoomOverride] = useState<number | null>(null);
   const [gridViewportWidth, setGridViewportWidth] = useState(0);
   const [showStartOverConfirm, setShowStartOverConfirm] = useState(false);
   const [showAccountRequiredModal, setShowAccountRequiredModal] = useState(false);
@@ -219,6 +290,32 @@ export default function BuildScreen({
   const [cloudSaveError, setCloudSaveError]     = useState<string | null>(null);
   const [hydrated, setHydrated]                 = useState(false);
   const saveTimeoutRef                          = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [toolMode, setToolMode]                 = useState<'paint' | 'select'>('paint');
+  const [activeTab, setActiveTab] = useState<'rectangle' | 'freeform' | 'pattern-tool' | null>(null);
+  const [selectorMode, setSelectorMode] = useState<'rectangle' | 'freeform'>('rectangle');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selRange, setSelRange]                 = useState<{ lo: number; hi: number } | null>(null);
+  const [clipboard, setClipboard]               = useState<{ main: PatternGrid; gap: PatternGrid; width: number } | null>(null);
+  const [pasteMode, setPasteMode]                = useState(false);
+  const selectAnchorRef                          = useRef<number | null>(null);
+  const cardRowRef                               = useRef<View>(null);
+  const [cardRowTop, setCardRowTop]              = useState(0);
+  const [viewportHeight, setViewportHeight]      = useState(
+    typeof window !== 'undefined' ? window.innerHeight : 0
+  );
+
+  // Fills exactly whatever space is left below the card row's own start
+  // position - not a moment more (which caused an unwanted scrollbar) and
+  // not a moment less (which left a white gap), since a fixed pixel value
+  // can't adapt to different viewport heights or content amounts.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    function handleResize() { setViewportHeight(window.innerHeight); }
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  const cardRowMinHeight = Math.max(0, viewportHeight - cardRowTop);
 
   // On mount, check local storage for previously-cached progress on this
   // exact pattern (e.g. from before a refresh) and restore it instead of
@@ -254,17 +351,39 @@ export default function BuildScreen({
   const historyRef                              = useRef<DualGrid[]>([]);
 
   const GRID_BASE = 40;
-  const zoom = ZOOM_LEVELS[zoomIdx];
+  const zoom = manualZoomOverride ?? ZOOM_LEVELS[zoomIdx];
 
-  // In horizontal mode the grid's horizontal span is driven by the
-  // bracelet length (config.cols).
-  const fitActive = orientation === 'horizontal' && fitToWindow;
-  const gridScrollPadding = 80; // matches s.gridScroll paddingHorizontal * 2
-  const availableGridWidth = Math.max(0, gridViewportWidth - gridScrollPadding);
+  // onLayout alone doesn't reliably refire on web when a sibling above
+  // (the grid) changes size and pushes this view without cardRowOuter's
+  // own size changing - same root cause as the earlier click-position
+  // bug. Re-measuring explicitly whenever something that can move the
+  // grid's height changes is more robust than trusting onLayout alone.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      cardRowRef.current?.measureInWindow((x, y) => setCardRowTop(y));
+    }, 0);
+    return () => clearTimeout(id);
+  }, [config.rows, zoom, orientation]);
+
+  // gridScrollPadding no longer subtracts fixed page padding - the grid
+  // now sits directly against its edge buttons, not page margins.
+  const EDGE_COLUMN_WIDTH = 68; // matches edgeColControls: 20px margin + 28px button + 20px margin
+  const availableGridWidth = Math.max(0, gridViewportWidth - EDGE_COLUMN_WIDTH * 2);
   const fitZoom = availableGridWidth > 0 && config.cols > 0
     ? availableGridWidth / (config.cols * GRID_BASE)
     : zoom;
-  const effectiveZoom = fitActive ? fitZoom : zoom;
+
+  function handleFitToWindow() {
+    setManualZoomOverride(fitZoom);
+  }
+  function stepZoomDown() {
+    setManualZoomOverride(null);
+    setZoomIdx(i => Math.max(0, i - 1));
+  }
+  function stepZoomUp() {
+    setManualZoomOverride(null);
+    setZoomIdx(i => Math.min(ZOOM_LEVELS.length - 1, i + 1));
+  }
 
   function pushHistory() {
     historyRef.current.push({
@@ -280,6 +399,17 @@ export default function BuildScreen({
   }
 
   function handleCellPress(pass: 'main' | 'gap', r: number, c: number) {
+    if (pasteMode) {
+      if (pass !== 'main') return;
+      performPaste(c);
+      return;
+    }
+    if (toolMode === 'select') {
+      if (pass !== 'main') return;
+      selectAnchorRef.current = c;
+      setSelRange({ lo: c, hi: c });
+      return;
+    }
     const color = palette[selectedColorIdx];
     if (!color) return;
     setDualGrid(prev => {
@@ -291,6 +421,13 @@ export default function BuildScreen({
   }
 
   function handleCellDrag(pass: 'main' | 'gap', r: number, c: number) {
+    if (pasteMode) return; // paste only triggers on a single press, not a drag
+    if (toolMode === 'select') {
+      if (pass !== 'main' || selectAnchorRef.current == null) return;
+      const anchor = selectAnchorRef.current;
+      setSelRange({ lo: Math.min(anchor, c), hi: Math.max(anchor, c) });
+      return;
+    }
     const color = palette[selectedColorIdx];
     if (!color) return;
     setDualGrid(prev => {
@@ -300,6 +437,52 @@ export default function BuildScreen({
       grid[r][c] = color;
       return pass === 'main' ? { ...prev, main: grid } : { ...prev, gap: grid };
     });
+  }
+
+  function toggleSelectMode() {
+    setToolMode(m => (m === 'select' ? 'paint' : 'select'));
+    setPasteMode(false);
+    setSelRange(null);
+    selectAnchorRef.current = null;
+  }
+
+  function handleCopySelection() {
+    if (!selRange) return;
+    const { lo, hi } = selRange;
+    // Edge-inclusive on purpose: grabbing the full width, boundary diamonds
+    // included, is what lets two placed copies agree on their shared
+    // border instead of leaving gaps at the seam.
+    const main: PatternGrid = dualGrid.main.map(row => row.slice(lo, hi + 1));
+    const gap: PatternGrid = dualGrid.gap.map(row => row.slice(lo, hi + 2));
+    setClipboard({ main, gap, width: hi - lo + 1 });
+  }
+
+  function toggleStampMode() {
+    if (!clipboard) return;
+    setPasteMode(m => !m);
+  }
+
+  function performPaste(destCol: number) {
+    if (!clipboard) return;
+    pushHistory();
+    const width = clipboard.width;
+    setDualGrid(prev => {
+      const newMain = prev.main.map(row => row.slice());
+      const newGap = prev.gap.map(row => row.slice());
+      for (let j = 0; j < width && (destCol + j) < config.cols; j++) {
+        for (let r = 0; r < newMain.length; r++) {
+          newMain[r][destCol + j] = clipboard.main[r][j];
+        }
+      }
+      for (let j = 0; j <= width && (destCol + j) <= config.cols; j++) {
+        for (let r = 0; r < newGap.length; r++) {
+          newGap[r][destCol + j] = clipboard.gap[r][j];
+        }
+      }
+      return { main: newMain, gap: newGap };
+    });
+    // Deliberately stays in paste mode - "stamp" repeatedly until the user
+    // turns it off themselves, rather than exiting after one placement.
   }
 
   function handlePaletteChange(newPalette: (string | null)[], newColorCount: number) {
@@ -356,6 +539,25 @@ export default function BuildScreen({
     onConfigChange({ ...config, cols: config.cols - 1, updatedAt: Date.now() });
   }
 
+  function addColumnLeft() {
+    pushHistory();
+    setDualGrid(prev => ({
+      main: prev.main.map(row => [null, ...row]),
+      gap:  prev.gap.map(row => [null, ...row]),
+    }));
+    onConfigChange({ ...config, cols: config.cols + 1, updatedAt: Date.now() });
+  }
+
+  function removeColumnLeft() {
+    if (config.cols <= 1) return;
+    pushHistory();
+    setDualGrid(prev => ({
+      main: prev.main.map(row => row.slice(1)),
+      gap:  prev.gap.map(row => row.slice(1)),
+    }));
+    onConfigChange({ ...config, cols: config.cols - 1, updatedAt: Date.now() });
+  }
+
   function handleClear() {
     pushHistory();
     setDualGrid(createDualGrid(config.rows, config.cols));
@@ -372,7 +574,22 @@ export default function BuildScreen({
 
     setIsSavingCloud(true);
     setCloudSaveError(null);
-    const { error } = await savePattern(user.id, updatedConfig, dualGrid);
+    const { displayNumber, error } = await savePattern(user.id, updatedConfig, dualGrid);
+
+    // If the user never gave this pattern a real name, the first
+    // successful save is what assigns its permanent "Bracelet #N" name -
+    // using the number the database just generated. This can't happen any
+    // earlier, since that number doesn't exist until the row is actually
+    // inserted.
+    if (!error && displayNumber != null && updatedConfig.name === DEFAULT_PATTERN_NAME) {
+      const finalName = `Bracelet #${formatPatternNumber(displayNumber)}`;
+      const renamedConfig: PatternConfig = { ...updatedConfig, name: finalName };
+      setName(finalName);
+      onConfigChange(renamedConfig);
+      const renameResult = await savePattern(user.id, renamedConfig, dualGrid);
+      if (renameResult.error) setCloudSaveError(renameResult.error);
+    }
+
     setIsSavingCloud(false);
 
     if (error) setCloudSaveError(error);
@@ -413,15 +630,26 @@ export default function BuildScreen({
     setShowSaveAsNewModal(false);
     setIsSavingCloud(true);
     setCloudSaveError(null);
-    const { error } = await savePattern(user.id, newConfig, dualGrid);
+    const { displayNumber, error } = await savePattern(user.id, newConfig, dualGrid);
+
+    // Same placeholder-rename logic as a normal Save, for the rare case
+    // where a never-yet-named pattern gets copied before ever being saved.
+    let finalConfig = newConfig;
+    if (!error && displayNumber != null && newConfig.name === DEFAULT_PATTERN_NAME) {
+      const finalName = `Bracelet #${formatPatternNumber(displayNumber)}`;
+      finalConfig = { ...newConfig, name: finalName };
+      const renameResult = await savePattern(user.id, finalConfig, dualGrid);
+      if (renameResult.error) setCloudSaveError(renameResult.error);
+    }
+
     setIsSavingCloud(false);
     if (error) setCloudSaveError(error);
 
     // Mirror "Save As" convention: focus switches to the new copy going
     // forward. The original pattern's saved row is left completely
     // untouched.
-    setName(newConfig.name);
-    onConfigChange(newConfig);
+    setName(finalConfig.name);
+    onConfigChange(finalConfig);
     setSavedModalMode('ask');
     setShowSavedModal(true);
   }
@@ -444,64 +672,17 @@ export default function BuildScreen({
   const header = (
     <View style={s.header}>
       <View style={s.headerTopRow}>
-        <input
-          type="text"
-          value={name}
-          onChange={e => {
-            const newName = e.target.value;
-            setName(newName);
-            onConfigChange({ ...config, name: newName });
-          }}
-          style={titleInputStyle}
-        />
-      </View>
-
-      <View style={s.colorsRow}>
-        {palette.slice(0, config.colorCount).map((c, i) => (
-          <TouchableOpacity
-            key={i}
-            style={[
-              s.circleBtn,
-              {
-                backgroundColor: c ?? '#e5e7eb',
-                borderWidth:     selectedColorIdx === i ? 3 : 1.5,
-                borderColor:     selectedColorIdx === i ? PURPLE : (c ?? '#d1d5db'),
-              },
-            ]}
-            onPress={() => { if (c) setSelectedColorIdx(i); }}
+        <View style={s.titleRowLeft}>
+          <input
+            type="text"
+            value={name}
+            onChange={e => {
+              const newName = e.target.value;
+              setName(newName);
+              onConfigChange({ ...config, name: newName });
+            }}
+            style={titleInputStyle}
           />
-        ))}
-        <TouchableOpacity style={s.changeColorsBtn} onPress={() => setShowColorPicker(true)}>
-          <Text style={s.changeColorsBtnTxt}>Change Colors</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={s.actionsRow}>
-        <View style={s.controlsGroup}>
-          <TouchableOpacity style={s.controlBtn} onPress={addRowTop}>
-            <Text style={s.controlBtnTxt}>Add Top Row</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.controlBtn} onPress={removeRowTop}>
-            <Text style={s.controlBtnTxt}>Remove Top Row</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.controlBtn} onPress={addRowBottom}>
-            <Text style={s.controlBtnTxt}>Add Bottom Row</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.controlBtn} onPress={removeRowBottom}>
-            <Text style={s.controlBtnTxt}>Remove Bottom Row</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.controlBtn} onPress={increaseLength}>
-            <Text style={s.controlBtnTxt}>Increase Length</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.controlBtn} onPress={decreaseLength}>
-            <Text style={s.controlBtnTxt}>Decrease Length</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={s.headerRightGroup}>
-          <TouchableOpacity style={s.toolbarBtn} onPress={() => setShowStartOverConfirm(true)}>
-            <Text style={s.toolbarBtnTxt}>Start Over</Text>
-          </TouchableOpacity>
 
           <TouchableOpacity
             style={[s.toolbarBtn, s.orientationBtn]}
@@ -513,42 +694,33 @@ export default function BuildScreen({
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[
-              s.toolbarBtn,
-              fitToWindow && s.toolbarBtnActive,
-              orientation !== 'horizontal' && s.toolbarBtnDisabled,
-            ]}
-            onPress={() => setFitToWindow(f => !f)}
-            disabled={orientation !== 'horizontal'}
+            style={s.toolbarBtn}
+            onPress={handleFitToWindow}
           >
-            <Text
-              style={[
-                s.toolbarBtnTxt,
-                fitToWindow && s.toolbarBtnActiveTxt,
-                orientation !== 'horizontal' && s.toolbarBtnDisabledTxt,
-              ]}
-            >
-              {fitToWindow ? 'Fit: On' : 'Fit to Window'}
-            </Text>
+            <Text style={s.toolbarBtnTxt}>Fit to Window</Text>
           </TouchableOpacity>
 
           <View style={s.zoomRow}>
             <TouchableOpacity
-              style={[s.zoomBtn, (zoomIdx <= 0 || fitActive) && s.zoomBtnDisabled]}
-              onPress={() => setZoomIdx(i => Math.max(0, i - 1))}
-              disabled={zoomIdx <= 0 || fitActive}
+              style={[s.zoomBtn, zoomIdx <= 0 && manualZoomOverride == null && s.zoomBtnDisabled]}
+              onPress={stepZoomDown}
             >
               <Text style={s.zoomBtnTxt}>-</Text>
             </TouchableOpacity>
-            <Text style={s.zoomLabel}>{Math.round(effectiveZoom * 100)}%</Text>
+            <Text style={s.zoomLabel}>{Math.round(zoom * 100)}%</Text>
             <TouchableOpacity
-              style={[s.zoomBtn, (zoomIdx >= ZOOM_LEVELS.length - 1 || fitActive) && s.zoomBtnDisabled]}
-              onPress={() => setZoomIdx(i => Math.min(ZOOM_LEVELS.length - 1, i + 1))}
-              disabled={zoomIdx >= ZOOM_LEVELS.length - 1 || fitActive}
+              style={[s.zoomBtn, zoomIdx >= ZOOM_LEVELS.length - 1 && manualZoomOverride == null && s.zoomBtnDisabled]}
+              onPress={stepZoomUp}
             >
               <Text style={s.zoomBtnTxt}>+</Text>
             </TouchableOpacity>
           </View>
+        </View>
+
+        <View style={s.headerRightGroup}>
+          <TouchableOpacity style={s.toolbarBtn} onPress={() => setShowStartOverConfirm(true)}>
+            <Text style={s.toolbarBtnTxt}>Start Over</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity style={s.toolbarBtn} onPress={handleUndo}>
             <Text style={s.toolbarBtnTxt}>Undo</Text>
@@ -574,6 +746,245 @@ export default function BuildScreen({
     </View>
   );
 
+  // Lives beside the grid, not above it - collapsible via sidebarCollapsed.
+  const sidebar = (
+    <View style={s.sidebar}>
+      <View style={s.sidebarHeaderRow}>
+        <Text style={s.groupLabel}>DESIGN CONTROLS</Text>
+        <TouchableOpacity
+          style={s.sidebarCollapseBtn}
+          onPress={() => setSidebarCollapsed(true)}
+          title="Hide these controls to see more of your bracelet."
+        >
+          <Text style={s.sidebarCollapseBtnTxt}>{'\u25B6'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={s.colorsRow}>
+        {palette.slice(0, config.colorCount).map((c, i) => (
+          <TouchableOpacity
+            key={i}
+            style={[
+              s.circleBtn,
+              {
+                backgroundColor: c ?? '#e5e7eb',
+                borderWidth:     selectedColorIdx === i ? 3 : 1.5,
+                borderColor:     selectedColorIdx === i ? PURPLE : (c ?? '#d1d5db'),
+              },
+            ]}
+            onPress={() => { if (c) setSelectedColorIdx(i); }}
+          />
+        ))}
+        <TouchableOpacity style={s.changeColorsBtn} onPress={() => setShowColorPicker(true)}>
+          <Text style={s.changeColorsBtnTxt}>Change Colors</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={s.tabBar}>
+        <TouchableOpacity
+          style={[s.tabBtn, activeTab === 'rectangle' && s.tabBtnActive]}
+          onPress={() => setActiveTab(t => (t === 'rectangle' ? null : 'rectangle'))}
+        >
+          <Text style={[s.tabBtnTxt, activeTab === 'rectangle' && s.tabBtnActiveTxt]}>Rectangle Selector</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.tabBtn, activeTab === 'freeform' && s.tabBtnActive]}
+          onPress={() => setActiveTab(t => (t === 'freeform' ? null : 'freeform'))}
+        >
+          <Text style={[s.tabBtnTxt, activeTab === 'freeform' && s.tabBtnActiveTxt]}>Freeform Selector</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.tabBtn, activeTab === 'pattern-tool' && s.tabBtnActive]}
+          onPress={() => setActiveTab(t => (t === 'pattern-tool' ? null : 'pattern-tool'))}
+        >
+          <Text style={[s.tabBtnTxt, activeTab === 'pattern-tool' && s.tabBtnActiveTxt]}>Pattern Tool</Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab && (
+        <View style={s.tabPanel}>
+          {activeTab === 'rectangle' && (
+            <View style={s.sectionToolsRow}>
+              <TouchableOpacity
+                style={[s.toolbarBtn, toolMode === 'select' && s.toolbarBtnActive]}
+                onPress={toggleSelectMode}
+                title="Turn this on, then drag across the diamonds you want to grab!"
+              >
+                <Text style={[s.toolbarBtnTxt, toolMode === 'select' && s.toolbarBtnActiveTxt]}>
+                  {toolMode === 'select' ? 'Selecting: On' : 'Select'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[s.toolbarBtn, !selRange && s.toolbarBtnDisabled]}
+                onPress={handleCopySelection}
+                disabled={!selRange}
+                title="Grabs everything inside your selection so you can use it again."
+              >
+                <Text style={[s.toolbarBtnTxt, !selRange && s.toolbarBtnDisabledTxt]}>Copy</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[s.toolbarBtn, pasteMode && s.toolbarBtnActive, !clipboard && s.toolbarBtnDisabled]}
+                onPress={toggleStampMode}
+                disabled={!clipboard}
+                title="Turns on stamping - every diamond you click gets your copy placed there, again and again, until you turn it off."
+              >
+                <Text style={[s.toolbarBtnTxt, pasteMode && s.toolbarBtnActiveTxt, !clipboard && s.toolbarBtnDisabledTxt]}>
+                  {pasteMode ? 'Stamping: On' : 'Paste'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {activeTab === 'freeform' && (
+            <Text style={s.comingSoonTxt}>
+              Coming soon! This will let you click individual diamonds to select an
+              irregular shape (like a chevron), then copy and paste it.
+            </Text>
+          )}
+
+          {activeTab === 'pattern-tool' && (
+            <Text style={s.comingSoonTxt}>
+              Not built yet - this section is a placeholder until we decide what
+              goes here.
+            </Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
+
+  const collapsedSidebarToggle = (
+    <View style={s.sidebarCollapsedStrip}>
+      <TouchableOpacity
+        style={s.sidebarExpandBtn}
+        onPress={() => setSidebarCollapsed(false)}
+        title="Show design controls (colors, sizing, selection tools)"
+      >
+        <Text style={s.sidebarExpandBtnTxt}>{'\u25C0'}</Text>
+      </TouchableOpacity>
+
+      <View style={s.collapsedColorsCol}>
+        {palette.slice(0, config.colorCount).map((c, i) => (
+          <TouchableOpacity
+            key={i}
+            style={[
+              s.collapsedCircleBtn,
+              {
+                backgroundColor: c ?? '#e5e7eb',
+                borderWidth:     selectedColorIdx === i ? 3 : 1.5,
+                borderColor:     selectedColorIdx === i ? PURPLE : (c ?? '#d1d5db'),
+              },
+            ]}
+            onPress={() => { if (c) setSelectedColorIdx(i); }}
+          />
+        ))}
+      </View>
+    </View>
+  );
+
+  const cardRow = (
+    <View
+      ref={cardRowRef}
+      style={[s.cardRowOuter, { minHeight: cardRowMinHeight }]}
+      onLayout={() => {
+        cardRowRef.current?.measureInWindow((x, y) => setCardRowTop(y));
+      }}
+    >
+      <View style={s.cardRow}>
+        <View style={s.card}>
+          <Text style={s.cardLabel}>COLORS</Text>
+          <View style={s.colorsRow}>
+            {palette.slice(0, config.colorCount).map((c, i) => (
+              <TouchableOpacity
+                key={i}
+                style={[
+                  s.circleBtn,
+                  {
+                    backgroundColor: c ?? '#e5e7eb',
+                    borderWidth:     selectedColorIdx === i ? 3 : 1.5,
+                    borderColor:     selectedColorIdx === i ? PURPLE : (c ?? '#d1d5db'),
+                  },
+                ]}
+                onPress={() => { if (c) setSelectedColorIdx(i); }}
+              />
+            ))}
+          </View>
+          <TouchableOpacity style={s.changeColorsBtn} onPress={() => setShowColorPicker(true)}>
+            <Text style={s.changeColorsBtnTxt}>Change Colors</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.cardLabel}>SELECTOR</Text>
+          <View style={s.selectorModeToggle}>
+            <TouchableOpacity
+              style={[s.selectorModeBtn, selectorMode === 'rectangle' && s.selectorModeBtnActive]}
+              onPress={() => setSelectorMode('rectangle')}
+            >
+              <Text style={[s.selectorModeBtnTxt, selectorMode === 'rectangle' && s.selectorModeBtnActiveTxt]}>Rectangle</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.selectorModeBtn, selectorMode === 'freeform' && s.selectorModeBtnActive]}
+              onPress={() => setSelectorMode('freeform')}
+            >
+              <Text style={[s.selectorModeBtnTxt, selectorMode === 'freeform' && s.selectorModeBtnActiveTxt]}>Freeform</Text>
+            </TouchableOpacity>
+          </View>
+
+          {selectorMode === 'rectangle' ? (
+            <View style={s.sectionToolsRow}>
+              <TouchableOpacity
+                style={[s.toolbarBtn, toolMode === 'select' && s.toolbarBtnActive]}
+                onPress={toggleSelectMode}
+                title="Turn this on, then drag across the diamonds you want to grab!"
+              >
+                <Text style={[s.toolbarBtnTxt, toolMode === 'select' && s.toolbarBtnActiveTxt]}>
+                  {toolMode === 'select' ? 'Selecting: On' : 'Select'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[s.toolbarBtn, !selRange && s.toolbarBtnDisabled]}
+                onPress={handleCopySelection}
+                disabled={!selRange}
+                title="Grabs everything inside your selection so you can use it again."
+              >
+                <Text style={[s.toolbarBtnTxt, !selRange && s.toolbarBtnDisabledTxt]}>Copy</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[s.toolbarBtn, pasteMode && s.toolbarBtnActive, !clipboard && s.toolbarBtnDisabled]}
+                onPress={toggleStampMode}
+                disabled={!clipboard}
+                title="Turns on stamping - every diamond you click gets your copy placed there, again and again, until you turn it off."
+              >
+                <Text style={[s.toolbarBtnTxt, pasteMode && s.toolbarBtnActiveTxt, !clipboard && s.toolbarBtnDisabledTxt]}>
+                  {pasteMode ? 'Stamping: On' : 'Paste'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={s.comingSoonTxt}>
+              Coming soon! Click individual diamonds to select an irregular shape.
+            </Text>
+          )}
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.cardLabel}>PATTERN TOOL</Text>
+          <Text style={s.comingSoonTxt}>Coming soon.</Text>
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.cardLabel}>BEHAVIOR CONTROLS</Text>
+          <Text style={s.comingSoonTxt}>Coming soon.</Text>
+        </View>
+      </View>
+    </View>
+  );
+
   return (
     <>
       <ScrollView
@@ -583,24 +994,74 @@ export default function BuildScreen({
       >
         {header}
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator
-          style={s.gridScroll}
-          contentContainerStyle={[
-            s.gridContent,
-            orientation === 'vertical' && s.gridContentCentered,
-          ]}
-          onLayout={e => setGridViewportWidth(e.nativeEvent.layout.width)}
-        >
-          <PatternGridView
-            dualGrid={dualGrid}
-            orientation={orientation}
-            onCellPress={handleCellPress}
-            onCellDrag={handleCellDrag}
-            zoom={effectiveZoom}
-          />
-        </ScrollView>
+        <View style={orientation === 'horizontal' ? s.bodyColumn : s.bodyRow}>
+          <View style={s.gridArea} onLayout={e => setGridViewportWidth(e.nativeEvent.layout.width)}>
+            <View style={s.edgeRowControls}>
+              <TouchableOpacity style={s.edgeBtn} onPress={removeRowTop} title="Remove the top row">
+                <Text style={s.edgeBtnTxt}>-</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.edgeBtn} onPress={addRowTop} title="Add a row to the top">
+                <Text style={s.edgeBtnTxt}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={s.gridWithSideEdges}>
+              <View style={s.edgeColControls}>
+                <TouchableOpacity style={s.edgeBtn} onPress={removeColumnLeft} title="Remove a column from the left">
+                  <Text style={s.edgeBtnTxt}>-</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.edgeBtn} onPress={addColumnLeft} title="Add a column to the left">
+                  <Text style={s.edgeBtnTxt}>+</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={s.gridScrollWrapper}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator
+                  style={s.gridScroll}
+                  contentContainerStyle={[
+                    s.gridContent,
+                    orientation === 'vertical' && s.gridContentCentered,
+                  ]}
+                >
+                  <PatternGridView
+                    dualGrid={dualGrid}
+                    orientation={orientation}
+                    onCellPress={handleCellPress}
+                    onCellDrag={handleCellDrag}
+                    zoom={zoom}
+                    selRange={selRange}
+                    pasteMode={pasteMode}
+                    clipboardWidth={clipboard?.width ?? null}
+                  />
+                </ScrollView>
+              </View>
+
+              <View style={s.edgeColControls}>
+                <TouchableOpacity style={s.edgeBtn} onPress={decreaseLength} title="Remove a column from the right">
+                  <Text style={s.edgeBtnTxt}>-</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.edgeBtn} onPress={increaseLength} title="Add a column to the right">
+                  <Text style={s.edgeBtnTxt}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={s.edgeRowControls}>
+              <TouchableOpacity style={s.edgeBtn} onPress={removeRowBottom} title="Remove the bottom row">
+                <Text style={s.edgeBtnTxt}>-</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.edgeBtn} onPress={addRowBottom} title="Add a row to the bottom">
+                <Text style={s.edgeBtnTxt}>+</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {orientation === 'horizontal'
+            ? cardRow
+            : (sidebarCollapsed ? collapsedSidebarToggle : sidebar)}
+        </View>
       </ScrollView>
 
       <Modal
@@ -763,17 +1224,49 @@ const s = StyleSheet.create({
   screen:             { flex: 1, backgroundColor: '#fff' },
   content:            { flexGrow: 1 },
   header:             { backgroundColor: '#fff', paddingHorizontal: 40, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
-  headerTopRow:       { marginBottom: 12 },
+  headerTopRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
+  titleRowLeft:       { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
   headerRightGroup:   { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' },
   title:              { fontSize: 18, fontWeight: '700', color: '#111' },
-  colorsRow:          { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12 },
-  circleBtn:          { width: 40, height: 40, borderRadius: 20 },
+  colorsRow:          { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
+  circleBtn:          { width: 28, height: 28, borderRadius: 14 },
   changeColorsBtn:    { borderWidth: 1, borderColor: PURPLE, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#f3f0ff' },
   changeColorsBtnTxt: { fontSize: 12, fontWeight: '600', color: PURPLE },
-  actionsRow:         { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  controlsGroup:      { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  controlBtn:         { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#fafafa' },
-  controlBtnTxt:      { fontSize: 12, fontWeight: '600', color: '#374151' },
+  groupLabel:         { fontSize: 10, fontWeight: '700', letterSpacing: 1, color: '#9ca3af', marginRight: 4 },
+  tabBar:             { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
+  tabBtn:             { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#f9fafb', borderWidth: 1, borderColor: '#e5e7eb' },
+  tabBtnActive:       { backgroundColor: '#f3f0ff', borderColor: PURPLE },
+  tabBtnTxt:          { fontSize: 13, fontWeight: '700', color: '#374151' },
+  tabBtnActiveTxt:    { color: PURPLE },
+  tabPanel:           { paddingTop: 12, paddingHorizontal: 4, gap: 12, borderTopWidth: 1, borderTopColor: '#e5e7eb', marginTop: 8 },
+  sectionToolsRow:    { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  comingSoonTxt:      { fontSize: 12, color: '#9ca3af', fontStyle: 'italic' },
+  bodyRow:            { flexDirection: 'row', alignItems: 'flex-start', flex: 1 },
+  bodyColumn:         { flexDirection: 'column', flex: 1 },
+  cardRowOuter:       { flex: 1, backgroundColor: '#f3f4f6', paddingVertical: 18, paddingHorizontal: 24 },
+  cardRow:            { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
+  card:               { flex: 1, minWidth: 200, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10, padding: 14, gap: 8 },
+  cardLabel:          { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: '#9ca3af' },
+  selectorModeToggle: { flexDirection: 'row', gap: 4, backgroundColor: '#f3f4f6', borderRadius: 6, padding: 3, alignSelf: 'flex-start' },
+  selectorModeBtn:    { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 4 },
+  selectorModeBtnActive: { backgroundColor: '#fff' },
+  selectorModeBtnTxt: { fontSize: 11, color: '#6b7280', fontWeight: '500' },
+  selectorModeBtnActiveTxt: { color: '#111', fontWeight: '700' },
+  gridArea:           { flex: 1, alignItems: 'center', paddingVertical: 16, backgroundColor: '#fff' },
+  edgeRowControls:    { flexDirection: 'row', gap: 6, marginVertical: 20 },
+  gridWithSideEdges:  { flexDirection: 'row', alignItems: 'center' },
+  edgeColControls:    { flexDirection: 'column', gap: 6, marginHorizontal: 20, flexShrink: 0 },
+  edgeBtn:            { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: '#e5e7eb', backgroundColor: '#fafafa', alignItems: 'center', justifyContent: 'center' },
+  edgeBtnTxt:         { fontSize: 14, fontWeight: '700', color: '#374151' },
+  sidebar:            { width: 240, borderLeftWidth: 1, borderLeftColor: '#e5e7eb', paddingHorizontal: 16, paddingVertical: 16, gap: 14 },
+  sidebarHeaderRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sidebarCollapseBtn: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, backgroundColor: '#f3f0ff' },
+  sidebarCollapseBtnTxt: { fontSize: 11, color: PURPLE, fontWeight: '700' },
+  sidebarExpandBtn:   { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6, backgroundColor: '#f3f0ff' },
+  sidebarExpandBtnTxt: { fontSize: 11, color: PURPLE, fontWeight: '700' },
+  sidebarCollapsedStrip: { width: 44, borderLeftWidth: 1, borderLeftColor: '#e5e7eb', paddingVertical: 16, paddingHorizontal: 8, alignItems: 'center', gap: 14 },
+  collapsedColorsCol: { flexDirection: 'column', gap: 6, alignItems: 'center' },
+  collapsedCircleBtn: { width: 22, height: 22, borderRadius: 11 },
   toolbarBtn:         { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#fafafa' },
   orientationBtn:     { minWidth: 132, alignItems: 'center' },
   toolbarBtnActive:   { backgroundColor: '#f3f0ff', borderColor: PURPLE },
@@ -798,7 +1291,8 @@ const s = StyleSheet.create({
   zoomBtnDisabled:    { opacity: 0.35 },
   zoomBtnTxt:         { fontSize: 18, color: '#374151' },
   zoomLabel:          { width: 48, textAlign: 'center', fontSize: 12, fontWeight: '600', color: '#374151' },
-  gridScroll:         { paddingHorizontal: 40, paddingTop: 16 },
-  gridContent:        { paddingBottom: 40 },
+  gridScrollWrapper:  { flexShrink: 1, minWidth: 0 },
+  gridScroll:         { flexShrink: 1 },
+  gridContent:        {},
   gridContentCentered:{ minWidth: '100%', justifyContent: 'center' },
 });
