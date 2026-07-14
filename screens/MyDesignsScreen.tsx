@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
 import { useAuth } from '../context/AuthContext';
-import { listPatterns, SavedPatternSummary, formatPatternNumber } from '../utils/patterns';
+import { listPatterns, deletePattern, SavedPatternSummary, formatPatternNumber } from '../utils/patterns';
+import { storageRemove, STORAGE_KEYS } from '../utils/storage';
 import PatternThumbnail from '../components/PatternThumbnail';
 
 const PURPLE = '#7c3aed';
@@ -38,6 +39,9 @@ export default function MyDesignsScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [previewPattern, setPreviewPattern] = useState<SavedPatternSummary | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -54,6 +58,26 @@ export default function MyDesignsScreen({
 
     return () => { cancelled = true; };
   }, [user]);
+
+  // Same soft-delete as the Build screen's Delete button - the row stays in
+  // the database with deleted_at set, it just drops out of this list.
+  async function handleConfirmDelete() {
+    if (!user || !previewPattern) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    const { error } = await deletePattern(user.id, previewPattern.clientId);
+    setIsDeleting(false);
+
+    if (error) {
+      setDeleteError(error);
+      return; // stay on the confirm modal if the delete itself failed
+    }
+
+    storageRemove(STORAGE_KEYS.patternState(previewPattern.clientId));
+    setPatterns(prev => (prev ?? []).filter(p => p.clientId !== previewPattern.clientId));
+    setShowDeleteConfirm(false);
+    setPreviewPattern(null);
+  }
 
   if (authLoading) {
     return (
@@ -119,7 +143,16 @@ export default function MyDesignsScreen({
           <View style={s.modalCard}>
             {previewPattern && (
               <>
-                <Text style={s.modalTitle}>{previewPattern.name}</Text>
+                <TouchableOpacity
+                  style={s.modalDeleteCornerBtn}
+                  onPress={() => { setDeleteError(null); setShowDeleteConfirm(true); }}
+                >
+                  <Text style={s.modalDeleteCornerBtnTxt}>Delete</Text>
+                </TouchableOpacity>
+
+                <Text style={[s.modalTitle, s.modalTitleWithCornerBtn]} numberOfLines={1}>
+                  {previewPattern.name}
+                </Text>
                 <Text style={s.modalMeta}>
                   {previewPattern.cols} x {previewPattern.rows} - Updated{' '}
                   {new Date(previewPattern.updatedAt).toLocaleDateString()}
@@ -152,6 +185,39 @@ export default function MyDesignsScreen({
                 </View>
               </>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showDeleteConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDeleteConfirm(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.confirmModalCard}>
+            <Text style={s.modalTitle}>Delete This Bracelet?</Text>
+            <Text style={s.modalConfirmText}>
+              Are you sure you want to permanently delete this pattern?
+            </Text>
+            {deleteError && <Text style={s.errorTxt}>{deleteError}</Text>}
+            <View style={s.modalButtonsRow}>
+              <TouchableOpacity
+                style={s.modalCancelBtn}
+                onPress={() => setShowDeleteConfirm(false)}
+                disabled={isDeleting}
+              >
+                <Text style={s.modalCancelTxt}>No, Do Not Delete</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.modalConfirmBtn, isDeleting && s.modalBtnDisabled]}
+                onPress={handleConfirmDelete}
+                disabled={isDeleting}
+              >
+                <Text style={s.modalConfirmTxt}>{isDeleting ? 'Deleting...' : 'Yes, Delete'}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -203,4 +269,25 @@ const s = StyleSheet.create({
   modalCancelTxt:     { fontSize: 13, fontWeight: '600', color: '#374151' },
   modalConfirmBtn:    { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: PURPLE },
   modalConfirmTxt:    { fontSize: 13, fontWeight: '700', color: '#fff' },
+  modalBtnDisabled:   { opacity: 0.5 },
+
+  // Same visual weight as the other toolbar-style buttons (matches Clear on
+  // the Build screen) rather than a red danger color - top-right corner of
+  // the preview modal, per request.
+  modalDeleteCornerBtn: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#fafafa',
+  },
+  modalDeleteCornerBtnTxt: { fontSize: 12, fontWeight: '600', color: '#374151' },
+  modalTitleWithCornerBtn: { paddingRight: 90 },
+
+  confirmModalCard: { backgroundColor: '#fff', borderRadius: 14, padding: 24, maxWidth: 360, width: '100%', gap: 10 },
+  modalConfirmText: { fontSize: 13, color: '#6b7280', lineHeight: 19, marginBottom: 8 },
 });

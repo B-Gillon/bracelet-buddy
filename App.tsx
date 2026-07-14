@@ -15,6 +15,7 @@ import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from './utils/sto
 import { loadPattern } from './utils/patterns';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ProfileProvider } from './context/ProfileContext';
+import { ThemeProvider } from './context/ThemeContext';
 
 type Screen =
   | 'home'
@@ -96,7 +97,6 @@ export default function App() {
 function AppInner() {
   const [screen, setScreen]         = useState<Screen>('home');
   const [config, setConfig]         = useState<PatternConfig | null>(null);
-  const [savedCount, setSavedCount] = useState(0);
   const [restored, setRestored]     = useState(false);
   const { user } = useAuth();
 
@@ -229,12 +229,14 @@ function AppInner() {
     return (
       <View style={{ width: '100%' }}>
         {header}
-        <BuildScreen
-          config={config}
-          onConfigChange={handleConfigChange}
-          onExit={handleExit}
-          onRequireAccount={() => setScreen('home')}
-        />
+        <ThemeProvider>
+          <BuildScreen
+            config={config}
+            onConfigChange={handleConfigChange}
+            onExit={handleExit}
+            onRequireAccount={() => setScreen('home')}
+          />
+        </ThemeProvider>
       </View>
     );
   }
@@ -252,10 +254,7 @@ function AppInner() {
           <DesignCenterScreen onStartFromScratch={handleStartFromScratch} />
         )}
         {screen === 'new-pattern' && (
-          <NewPatternScreen
-            existingCount={savedCount}
-            onNext={handleNext}
-          />
+          <NewPatternScreen onNext={handleNext} />
         )}
         {screen === 'color-picker' && config && (
           <ColorPickerScreen

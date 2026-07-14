@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { PatternConfig, defaultPatternName } from '../types/pattern';
+import { PatternConfig, DEFAULT_PATTERN_NAME } from '../types/pattern';
+import { useAuth } from '../context/AuthContext';
+import { isPatternNameTaken } from '../utils/patterns';
 
 const PURPLE = '#7c3aed';
 
@@ -32,19 +34,41 @@ function Stepper({ label, value, min, max, onChange }: {
 }
 
 export default function NewPatternScreen({
-  existingCount,
   onNext,
 }: {
-  existingCount: number;
   onNext: (config: PatternConfig) => void;
 }) {
+  const { user } = useAuth();
   const [name, setName]           = useState('');
   const [colorCount, setColorCount] = useState(4);
   const [cols, setCols]           = useState(40);
   const [rows, setRows]           = useState(6);
+  const [nameStatus, setNameStatus] = useState<
+    'idle' | 'checking' | 'available' | 'taken' | 'error'
+  >('idle');
+
+  // Only checks a name the person actually typed - the blank/default case
+  // becomes "New Bracelet" at submit time, and duplicates of that are fine
+  // pre-save since nothing's written to the database until the first Save.
+  useEffect(() => {
+    const trimmed = name.trim();
+    if (!trimmed || !user) {
+      setNameStatus('idle');
+      return;
+    }
+
+    setNameStatus('checking');
+    const timeout = setTimeout(async () => {
+      const { taken, error } = await isPatternNameTaken(user.id, trimmed);
+      setNameStatus(error ? 'error' : taken ? 'taken' : 'available');
+    }, 500);
+
+    return () => clearTimeout(timeout);
+  }, [name, user]);
 
   function handleNext() {
-    const finalName = name.trim().length > 0 ? name.trim() : defaultPatternName(existingCount);
+    if (nameStatus === 'taken' || nameStatus === 'checking') return;
+    const finalName = name.trim().length > 0 ? name.trim() : DEFAULT_PATTERN_NAME;
     const now = Date.now();
     const config: PatternConfig = {
       id: String(now),
@@ -71,7 +95,7 @@ export default function NewPatternScreen({
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
-          placeholder={defaultPatternName(existingCount)}
+          placeholder={DEFAULT_PATTERN_NAME}
           style={{
             flex: 1,
             height: 36,
@@ -86,6 +110,12 @@ export default function NewPatternScreen({
           }}
         />
       </View>
+      {nameStatus === 'checking' && (
+        <Text style={s.nameCheckingTxt}>Checking availability...</Text>
+      )}
+      {nameStatus === 'taken' && (
+        <Text style={s.nameTakenTxt}>You already have a bracelet with that name.</Text>
+      )}
 
       <View style={s.stepperStack}>
         <Stepper label="# Of Colors" value={colorCount} min={2} max={10} onChange={setColorCount} />
@@ -93,7 +123,11 @@ export default function NewPatternScreen({
         <Stepper label="Width"       value={rows}        min={2} max={30}  onChange={setRows} />
       </View>
 
-      <TouchableOpacity style={s.nextBtn} onPress={handleNext}>
+      <TouchableOpacity
+        style={[s.nextBtn, (nameStatus === 'taken' || nameStatus === 'checking') && s.nextBtnDisabled]}
+        onPress={handleNext}
+        disabled={nameStatus === 'taken' || nameStatus === 'checking'}
+      >
         <Text style={s.nextBtnTxt}>Next</Text>
       </TouchableOpacity>
     </ScrollView>
@@ -104,6 +138,8 @@ const s = StyleSheet.create({
   container:          { padding: 20, maxWidth: 480, width: '100%', alignSelf: 'center' },
   title:              { fontSize: 22, fontWeight: '700', color: '#111', marginBottom: 4 },
   subtitle:           { fontSize: 13, color: '#9ca3af', marginBottom: 24 },
+  nameCheckingTxt:    { fontSize: 11, color: '#9ca3af', marginTop: -6, marginBottom: 12 },
+  nameTakenTxt:       { fontSize: 11, color: '#dc2626', fontWeight: '600', marginTop: -6, marginBottom: 12 },
   stepperStack:       { gap: 12, marginBottom: 28 },
   stepperCard:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10, padding: 14, backgroundColor: '#fafafa', marginBottom: 12, gap: 12 },
   stepperLabel:       { fontSize: 13, fontWeight: '600', color: '#374151', minWidth: 100 },
@@ -113,5 +149,6 @@ const s = StyleSheet.create({
   stepperBtnTxt:      { fontSize: 20, color: '#374151' },
   stepperValue:       { width: 44, textAlign: 'center', fontSize: 16, fontWeight: '700', color: '#111' },
   nextBtn:            { backgroundColor: PURPLE, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
+  nextBtnDisabled:    { opacity: 0.5 },
   nextBtnTxt:         { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
