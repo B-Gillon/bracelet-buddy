@@ -9,7 +9,7 @@ Repo: `B-Gillon/bracelet-buddy` (GitHub). Supabase project ref: `erjlwjaosuagxpq
 ## Non-negotiable conventions
 
 - **Full file overwrites only.** Never partial diffs/snippets for existing files - always the complete file content.
-- **Brand color:** `PURPLE = '#7c3aed'`, used as a local constant per-file (not currently a shared theme file).
+- **Brand color:** `PURPLE = '#7c3aed'`. Centralized as `LIGHT_THEME.purple` in `constants/theme.ts` for BuildScreen and everything it renders (see Theme system below) - `GlobalHeader.tsx` and `SettingsScreen.tsx` still keep their own local `PURPLE` const and were deliberately not migrated.
 - **No independent design/layout decisions** without asking first - architecture and schema changes especially need sign-off before applying.
 
 ## Routing - deliberately not a real router
@@ -21,6 +21,34 @@ Repo: `B-Gillon/bracelet-buddy` (GitHub). Supabase project ref: `erjlwjaosuagxpq
 ## BuildScreen's layout quirk - do not "fix" this
 
 `BuildScreen` must NOT be wrapped in a `flex: 1` / height-constrained parent - that breaks its internal `ScrollView` + `stickyHeaderIndices` sticky header behavior on web. But it DOES need an explicit `width: '100%'` on whatever wraps it, because Expo Web's root container lays out as a row internally, and an unstyled wrapper won't stretch to fill the viewport otherwise. Both of these were hard-won fixes - don't remove either half.
+
+## Theme system
+
+- `constants/theme.ts` - `Theme` interface + `LIGHT_THEME`, the single source of truth for BuildScreen's colors (brand, surfaces, borders, text, grid canvas, modal overlay). Every value is unchanged from what used to be hardcoded inline - this was a pure centralization pass, not a redesign.
+- `context/ThemeContext.tsx` → `useTheme()`: returns `{ theme, mode }`, hardcoded to `LIGHT_THEME`/`'light'` for now. No toggle yet - this is deliberately the one place a future Dark Mode setting plugs in (swap in a `DARK_THEME` based on a stored preference); no consuming component should need to change when that happens.
+- Scoped to BuildScreen and its extracted pieces only (see below) - not yet rolled out app-wide.
+
+## BuildScreen architecture - extracted pieces
+
+`BuildScreen.tsx` still owns all editor state directly (grid data, selection, tool mode, undo/redo, floating Duplicate/Move op) - it just hands that state down via `BuildEditorContext` instead of threading a dozen props, and delegates rendering to extracted components:
+
+- `context/BuildEditorContext.tsx` - the shared state contract (`BuildEditorContextValue`) for every card below. Not owned by its own Provider - BuildScreen constructs the value object itself and renders `<BuildEditorContext.Provider>`.
+- `components/PatternGridView.tsx` - the actual diamond-grid rendering + touch/click input (press/drag/release, selection overlay, floating-copy overlay, rectangle box-select preview and hit-testing).
+- `components/GridEdgeControls.tsx` - the +/- row/column buttons around the grid's four edges.
+- `components/BuildScreenModals.tsx` - `StartOverConfirmModal`, `DeletePatternModal`, `AccountRequiredModal`, `SaveAsNewModal`, `SavedModal`.
+- `components/build-cards/` - `ColorsCard`, `SelectorCard`, `PatternToolCard` (placeholder), `BehaviorControlsCard`, `ModeIndicator`. These make up the horizontal-mode `cardRow`. Vertical mode still uses an older, separate inline sidebar in `BuildScreen.tsx` that duplicates a *subset* of what the cards do (colors + basic selection) - flagged as a known future consolidation, not a bug.
+
+## Editor tools - Paint / Select / Erase
+
+Exactly one `toolMode: 'paint' | 'select' | 'erase'` is active at a time (see `BuildEditorContext`). `onSelectTool`/`onColorTool`/`onEraseTool` always **set** the mode, never toggle - there's no "neither" state.
+
+- **Color Tool (paint):** default. Click/drag paints the selected palette color; clicking an already-painted diamond with its own color clears it (single-cell toggle).
+- **Select Tool:** click/drag adds diamonds to `selectedCells`. Also supports **rectangle box-select** (drag a marquee, release to add everything inside) - box-drag only grabs **colored** diamonds (blanks are excluded, since there's nothing meaningful to select there); a plain single click still toggles any cell regardless of color. Magic Wand (`onSelectConnected`, flood-fill same-color neighbors) and Select Same Color (`onSelectSameColor`, matches anywhere in the pattern) both grow from the current selection. Duplicate/Move snapshot the selection into a floating copy (`FloatingOp`) that locks the tool until Done/Cancel.
+- **Delete/Erase Tool:** click/drag clears a diamond's color back to blank, regardless of whichever palette color is selected. A distinct tool (not a palette entry), lives next to Color Tool in the COLORS card.
+
+**Flip Horizontal/Vertical (`onFlipHorizontal`/`onFlipVertical`) is a true rigid-piece flip** - the shape's outline moves with its colors, like flipping a sticker, and the selection itself moves to the new mirrored footprint. It does **not** just recolor whatever cells happen to already be selected - that was a real bug once (asymmetric shapes appeared to do nothing on Flip) and got fixed deliberately; don't regress to the color-only version. Each pass (main beads vs. gap connectors) mirrors within its own bounding box. See `flipSelection()` in `BuildScreen.tsx`.
+
+**Undo/Redo** (`historyRef`/`futureRef`, capped at 20 entries each) covers *every* mutation, including direct single-diamond paint/erase clicks and drags - not just the multi-cell operations (Recolor Selected, Flip, Replace Colors, Duplicate/Move). This required a specific pattern: `ensureStrokeHistory()` pushes a history entry lazily, once per press-and-drag gesture (tracked via `strokeHistoryPushedRef`, reset in `handleCellRelease`), so an entire click-and-drag stroke collapses into exactly one Undo step instead of zero (the original bug - direct painting/erasing never called `pushHistory()` at all) or one-per-diamond. Any new direct-mutation code path needs to call `ensureStrokeHistory()` before its first real grid write, or it'll silently be un-undoable.
 
 ## Shared geometry/types - single source of truth
 
