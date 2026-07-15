@@ -24,7 +24,7 @@ type ReplaceRule = { id: number; fromIdx: number | null; toIdx: number | null };
 // forwards onClick straight to the underlying div, so this only does
 // anything on web - harmless no-op on native).
 //
-// The Delete button next to Color Tool is its own tool (Erase), not just
+// The Eraser button next to Color Tool is its own tool (Erase), not just
 // another palette entry - clicking or dragging diamonds while it's active
 // clears their color no matter what's currently painted on them, unrelated
 // to whichever palette color happens to be selected. Its onPress carries an
@@ -131,10 +131,12 @@ export default function ColorsCard() {
           <TouchableOpacity
             style={[s.toolbarBtn, toolMode === 'erase' && s.toolbarBtnActive]}
             onPress={onEraseTool}
-            title="Click or drag diamonds to clear their color."
-            {...({ onClick: (e: any) => { if (e && e.stopPropagation) e.stopPropagation(); } } as any)}
+            {...({
+              title: 'Click or drag diamonds to clear their color.',
+              onClick: (e: any) => { if (e && e.stopPropagation) e.stopPropagation(); },
+            } as any)}
           >
-            <Text style={[s.toolbarBtnTxt, toolMode === 'erase' && s.toolbarBtnActiveTxt]}>Delete</Text>
+            <Text style={[s.toolbarBtnTxt, toolMode === 'erase' && s.toolbarBtnActiveTxt]}>Eraser</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -178,18 +180,18 @@ export default function ColorsCard() {
               <TouchableOpacity
                 style={[s.replaceSwatch, { backgroundColor: from ?? theme.border }]}
                 onPress={() => cycleRuleFrom(rule.id)}
-                title="Click to cycle through your palette colors."
+                {...({ title: 'Click to cycle through your palette colors.' } as any)}
               />
               <Text style={s.replaceLabel}>to</Text>
               <TouchableOpacity
                 style={[s.replaceSwatch, { backgroundColor: to ?? theme.border }]}
                 onPress={() => cycleRuleTo(rule.id)}
-                title="Click to cycle through your palette colors."
+                {...({ title: 'Click to cycle through your palette colors.' } as any)}
               />
               <TouchableOpacity
                 style={s.removeRuleBtn}
                 onPress={() => removeRule(rule.id)}
-                title="Remove this rule."
+                {...({ title: 'Remove this rule.' } as any)}
               >
                 <Text style={s.removeRuleBtnTxt}>×</Text>
               </TouchableOpacity>
@@ -202,7 +204,11 @@ export default function ColorsCard() {
         )}
 
         <View style={s.replaceActionsRow}>
-          <TouchableOpacity style={s.toolbarBtn} onPress={addRule} title="Add another color-change rule.">
+          <TouchableOpacity
+            style={s.toolbarBtn}
+            onPress={addRule}
+            {...({ title: 'Add another color-change rule.' } as any)}
+          >
             <Text style={s.toolbarBtnTxt}>+ Add Rule</Text>
           </TouchableOpacity>
 
@@ -210,7 +216,7 @@ export default function ColorsCard() {
             style={[s.toolbarBtn, !canApply && s.toolbarBtnDisabled]}
             onPress={handleApplyAll}
             disabled={!canApply}
-            title="Applies every rule above at once, across the whole pattern."
+            {...({ title: 'Applies every rule above at once, across the whole pattern.' } as any)}
           >
             <Text style={[s.toolbarBtnTxt, !canApply && s.toolbarBtnDisabledTxt]}>Apply All</Text>
           </TouchableOpacity>

@@ -23,10 +23,10 @@ export default function GridEdgeControls({
 
   return (
     <View style={axis === 'row' ? s.rowControls : s.colControls}>
-      <TouchableOpacity style={s.edgeBtn} onPress={onDecrease} title={decreaseTitle}>
+      <TouchableOpacity style={s.edgeBtn} onPress={onDecrease} {...({ title: decreaseTitle } as any)}>
         <Text style={s.edgeBtnTxt}>-</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={s.edgeBtn} onPress={onIncrease} title={increaseTitle}>
+      <TouchableOpacity style={s.edgeBtn} onPress={onIncrease} {...({ title: increaseTitle } as any)}>
         <Text style={s.edgeBtnTxt}>+</Text>
       </TouchableOpacity>
     </View>

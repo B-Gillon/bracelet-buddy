@@ -46,12 +46,16 @@ export interface BuildEditorContextValue {
   onSelectConnected: () => void;
   onSelectSameColor: () => void;
 
-  // Non-null while a Duplicate/Move copy is floating and awaiting
-  // Done/Cancel - the tool is "locked" into positioning it during this
-  // window (see BuildScreen's handleCellPress/handleCellDrag).
+  // Non-null while a Duplicate/Move copy is floating, awaiting either a
+  // drop (releasing a drag on it commits it immediately - no separate Done
+  // step) or Cancel - the tool is "locked" into positioning it during this
+  // window (see BuildScreen's handleCellPress/handleCellDrag/handleCellRelease).
   floatingKind: 'duplicate' | 'move' | null;
   onDuplicate: () => void;
   onMove: () => void;
+  // Still exposed for callers that want to commit programmatically, but
+  // the normal path is handleCellRelease auto-committing on drop - no UI
+  // button calls this directly anymore.
   onDoneFloating: () => void;
   onCancelFloating: () => void;
 

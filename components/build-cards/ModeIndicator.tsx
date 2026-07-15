@@ -5,9 +5,9 @@ import { useTheme } from '../../context/ThemeContext';
 import { useBuildEditor } from '../../context/BuildEditorContext';
 
 // New: a small always-visible badge answering "what am I doing right now" -
-// Painting (default), Selecting (Select tool is on), Erasing (Delete tool
+// Painting (default), Selecting (Select tool is on), Erasing (Eraser tool
 // is on), or Duplicating/Moving (a Duplicate/Move copy is floating,
-// awaiting Done/Cancel). A floating copy takes priority over
+// awaiting drop or Cancel). A floating copy takes priority over
 // Selecting/Erasing, since handleCellPress in BuildScreen checks floatingOp
 // before toolMode too.
 export default function ModeIndicator() {

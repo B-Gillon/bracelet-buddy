@@ -274,10 +274,12 @@ export default function BuildScreen({
   // or dragged across (before Duplicate/Move) - keyed 'pass:r:c'. Once
   // Duplicate or Move is clicked, that selection snapshots into floatingOp
   // and selectedCells goes back to empty; while floatingOp is set, the tool
-  // is locked into positioning that floating copy until Done or Cancel.
+  // is locked into positioning that floating copy until it's dropped (see
+  // handleCellRelease, which commits it the moment you let go of a drag on
+  // it) or Cancel backs out of it entirely.
   const [selectedCells, setSelectedCells]       = useState<Set<string>>(new Set());
   const [floatingOp, setFloatingOp]             = useState<FloatingOp | null>(null);
-  const grabAnchorRef                            = useRef<{ r: number; c: number } | null>(null);
+  const grabAnchorRef                            = useRef<{ pass: 'main' | 'gap'; r: number; c: number } | null>(null);
   const grabStartOffsetRef                       = useRef<{ dr: number; dc: number }>({ dr: 0, dc: 0 });
 
   // Tracks whether the CURRENT press+drag gesture has already pushed a
@@ -453,14 +455,15 @@ export default function BuildScreen({
 
   // While a Duplicate/Move copy is floating, the only thing a press can do
   // is grab it (if it landed on one of the floating diamonds) to start
-  // dragging - everything else is locked until Done or Cancel resolves it.
+  // dragging - everything else is locked until releasing that drag commits
+  // it (handleCellRelease) or Cancel resolves it instead.
   function handleCellPress(pass: 'main' | 'gap', r: number, c: number) {
     if (floatingOp) {
       const onFloating = floatingOp.cells.some(
         cell => cell.pass === pass && cell.r + floatingOp.dr === r && cell.c + floatingOp.dc === c
       );
       if (onFloating) {
-        grabAnchorRef.current = { r, c };
+        grabAnchorRef.current = { pass, r, c };
         grabStartOffsetRef.current = { dr: floatingOp.dr, dc: floatingOp.dc };
       }
       return;
@@ -505,6 +508,18 @@ export default function BuildScreen({
   function handleCellDrag(pass: 'main' | 'gap', r: number, c: number) {
     if (floatingOp) {
       if (!grabAnchorRef.current) return; // press didn't land on the floating copy - locked
+      // main/gap each have their own r,c coordinate space, offset from one
+      // another by half a diamond (see neighborsOf above) - so a raw (r-r0)
+      // is only a true whole-diamond step when the hovered cell is the SAME
+      // pass as the one originally grabbed. The drag path inevitably sweeps
+      // over opposite-pass cells in between (that's how the weave works),
+      // and reacting to those too used to produce wrong deltas: a no-op
+      // step in one diagonal direction (dr/dc both unchanged) and a
+      // double-diamond jump in the other (dr AND dc both shifting by 1 for
+      // what's visually a single diamond). Ignoring opposite-pass hovers
+      // and only reacting once the drag reaches the next same-pass cell
+      // fixes both.
+      if (pass !== grabAnchorRef.current.pass) return;
       const { r: r0, c: c0 } = grabAnchorRef.current;
       const { dr: dr0, dc: dc0 } = grabStartOffsetRef.current;
       const newDr = dr0 + (r - r0);
@@ -546,7 +561,17 @@ export default function BuildScreen({
     });
   }
 
+  // Letting go while actually holding the floating Duplicate/Move copy
+  // (grabAnchorRef is only set by handleCellPress when the press landed on
+  // the copy itself) drops it in place immediately - no separate Done click
+  // needed. A release that never grabbed the copy (e.g. the initial default
+  // offset before it's been touched, or a click elsewhere on the grid while
+  // it's locked) leaves it floating, same as before; Cancel is still there
+  // to back out of it entirely.
   function handleCellRelease() {
+    if (floatingOp && grabAnchorRef.current) {
+      handleDoneFloating();
+    }
     grabAnchorRef.current = null;
     strokeHistoryPushedRef.current = false;
   }
@@ -1181,7 +1206,7 @@ export default function BuildScreen({
         <TouchableOpacity
           style={s.sidebarCollapseBtn}
           onPress={() => setSidebarCollapsed(true)}
-          title="Hide these controls to see more of your bracelet."
+          {...({ title: 'Hide these controls to see more of your bracelet.' } as any)}
         >
           <Text style={s.sidebarCollapseBtnTxt}>{'▶'}</Text>
         </TouchableOpacity>
@@ -1234,20 +1259,19 @@ export default function BuildScreen({
           {activeTab === 'selector' && (
             <View style={s.sectionToolsRow}>
               {floatingOp ? (
-                <>
-                  <TouchableOpacity style={s.toolbarBtn} onPress={handleCancelFloating}>
-                    <Text style={s.toolbarBtnTxt}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[s.toolbarBtn, s.toolbarBtnActive]} onPress={handleDoneFloating}>
-                    <Text style={[s.toolbarBtnTxt, s.toolbarBtnActiveTxt]}>Done</Text>
-                  </TouchableOpacity>
-                </>
+                <TouchableOpacity
+                  style={s.toolbarBtn}
+                  onPress={handleCancelFloating}
+                  {...({ title: 'Drag the copy to where you want it - letting go drops it in place. Cancel backs out instead of placing it.' } as any)}
+                >
+                  <Text style={s.toolbarBtnTxt}>Cancel</Text>
+                </TouchableOpacity>
               ) : (
                 <>
                   <TouchableOpacity
                     style={[s.toolbarBtn, toolMode === 'select' && s.toolbarBtnActive]}
                     onPress={selectSelectTool}
-                    title="Turn this on, then click or drag across the diamonds you want to grab - just like coloring."
+                    {...({ title: 'Turn this on, then click or drag across the diamonds you want to grab - just like coloring.' } as any)}
                   >
                     <Text style={[s.toolbarBtnTxt, toolMode === 'select' && s.toolbarBtnActiveTxt]}>
                       Select Tool
@@ -1258,7 +1282,7 @@ export default function BuildScreen({
                     style={[s.toolbarBtn, selectedCells.size === 0 && s.toolbarBtnDisabled]}
                     onPress={handleReset}
                     disabled={selectedCells.size === 0}
-                    title="Clears the current selection so you can start a new one."
+                    {...({ title: 'Clears the current selection so you can start a new one.' } as any)}
                   >
                     <Text style={[s.toolbarBtnTxt, selectedCells.size === 0 && s.toolbarBtnDisabledTxt]}>Reset</Text>
                   </TouchableOpacity>
@@ -1267,7 +1291,7 @@ export default function BuildScreen({
                     style={[s.toolbarBtn, selectedCells.size === 0 && s.toolbarBtnDisabled]}
                     onPress={handleDuplicate}
                     disabled={selectedCells.size === 0}
-                    title="Makes a movable copy of your selection. Stays available so you can stamp another copy right after."
+                    {...({ title: 'Makes a movable copy of your selection. Stays available so you can stamp another copy right after.' } as any)}
                   >
                     <Text style={[s.toolbarBtnTxt, selectedCells.size === 0 && s.toolbarBtnDisabledTxt]}>Duplicate</Text>
                   </TouchableOpacity>
@@ -1276,7 +1300,7 @@ export default function BuildScreen({
                     style={[s.toolbarBtn, selectedCells.size === 0 && s.toolbarBtnDisabled]}
                     onPress={handleMove}
                     disabled={selectedCells.size === 0}
-                    title="Picks up your selection so you can move it - the old spot goes blank right away."
+                    {...({ title: 'Picks up your selection so you can move it - the old spot goes blank right away.' } as any)}
                   >
                     <Text style={[s.toolbarBtnTxt, selectedCells.size === 0 && s.toolbarBtnDisabledTxt]}>Move</Text>
                   </TouchableOpacity>
@@ -1301,7 +1325,7 @@ export default function BuildScreen({
       <TouchableOpacity
         style={s.sidebarExpandBtn}
         onPress={() => setSidebarCollapsed(false)}
-        title="Show design controls (colors, sizing, selection tools)"
+        {...({ title: 'Show design controls (colors, sizing, selection tools)' } as any)}
       >
         <Text style={s.sidebarExpandBtnTxt}>{'◀'}</Text>
       </TouchableOpacity>

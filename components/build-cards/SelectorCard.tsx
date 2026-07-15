@@ -7,10 +7,12 @@ import { useBuildEditor } from '../../context/BuildEditorContext';
 // The SELECTOR card from BuildScreen's cardRow: Select Tool lives in the
 // top-right corner (mirrors Color Tool's spot on the Colors card), then
 // Reset/Magic Wand/Select Same Color grow or clear the selection, and
-// Duplicate/Move act on it. While a Duplicate/Move copy is floating (drag
-// it, then Done/Cancel), the row swaps for Done/Cancel. Duplicate
-// deliberately keeps the selection afterward (BuildScreen doesn't clear
-// it), so it stays enabled for stamping out another copy right away.
+// Duplicate/Move act on it. While a Duplicate/Move copy is floating, the
+// row swaps for a single Cancel button - dragging the copy and letting go
+// drops it in place immediately (BuildScreen's handleCellRelease commits
+// it), so there's no separate Done step. Duplicate deliberately keeps the
+// selection afterward (BuildScreen doesn't clear it), so it stays enabled
+// for stamping out another copy right away.
 //
 // Recolor Selected also lives here rather than on the Colors card - it's a
 // selection-based action (like Magic Wand/Select Same Color), not a
@@ -33,7 +35,7 @@ export default function SelectorCard() {
     palette, colorCount,
     toolMode, onSelectTool,
     selectedCount, onReset, onSelectConnected, onSelectSameColor, floatingKind,
-    onDuplicate, onMove, onDoneFloating, onCancelFloating,
+    onDuplicate, onMove, onCancelFloating,
     onRecolorSelection, onFlipHorizontal, onFlipVertical,
   } = useBuildEditor();
 
@@ -69,7 +71,7 @@ export default function SelectorCard() {
         <TouchableOpacity
           style={[s.toolbarBtn, toolMode === 'select' && s.toolbarBtnActive]}
           onPress={onSelectTool}
-          title="Click or drag across the diamonds you want to grab - just like coloring."
+          {...({ title: 'Click or drag across the diamonds you want to grab - just like coloring.' } as any)}
         >
           <Text style={[s.toolbarBtnTxt, toolMode === 'select' && s.toolbarBtnActiveTxt]}>
             Select Tool
@@ -83,21 +85,20 @@ export default function SelectorCard() {
 
       <View style={s.sectionToolsRow}>
         {floatingKind ? (
-          <>
-            <TouchableOpacity style={s.toolbarBtn} onPress={() => { onSelectTool(); onCancelFloating(); }}>
-              <Text style={s.toolbarBtnTxt}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[s.toolbarBtn, s.toolbarBtnActive]} onPress={() => { onSelectTool(); onDoneFloating(); }}>
-              <Text style={[s.toolbarBtnTxt, s.toolbarBtnActiveTxt]}>Done</Text>
-            </TouchableOpacity>
-          </>
+          <TouchableOpacity
+            style={s.toolbarBtn}
+            onPress={() => { onSelectTool(); onCancelFloating(); }}
+            {...({ title: 'Drag the copy to where you want it - letting go drops it in place. Cancel backs out instead of placing it.' } as any)}
+          >
+            <Text style={s.toolbarBtnTxt}>Cancel</Text>
+          </TouchableOpacity>
         ) : (
           <>
             <TouchableOpacity
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onReset(); }}
               disabled={selectedCount === 0}
-              title="Clears the current selection so you can start a new one."
+              {...({ title: 'Clears the current selection so you can start a new one.' } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Reset</Text>
             </TouchableOpacity>
@@ -106,7 +107,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onSelectConnected(); }}
               disabled={selectedCount === 0}
-              title="Grows the selection to every touching diamond that's the same color as a diamond you've already selected."
+              {...({ title: "Grows the selection to every touching diamond that's the same color as a diamond you've already selected." } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Magic Wand</Text>
             </TouchableOpacity>
@@ -115,7 +116,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onSelectSameColor(); }}
               disabled={selectedCount === 0}
-              title="Selects every diamond anywhere in the pattern that's the same color as a diamond you've already selected."
+              {...({ title: "Selects every diamond anywhere in the pattern that's the same color as a diamond you've already selected." } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Select Same Color</Text>
             </TouchableOpacity>
@@ -124,7 +125,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onDuplicate(); }}
               disabled={selectedCount === 0}
-              title="Makes a movable copy of your selection. Stays available so you can stamp another copy right after."
+              {...({ title: 'Makes a movable copy of your selection. Stays available so you can stamp another copy right after.' } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Duplicate</Text>
             </TouchableOpacity>
@@ -133,7 +134,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onMove(); }}
               disabled={selectedCount === 0}
-              title="Picks up your selection so you can move it - the old spot goes blank right away."
+              {...({ title: 'Picks up your selection so you can move it - the old spot goes blank right away.' } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Move</Text>
             </TouchableOpacity>
@@ -142,7 +143,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onFlipHorizontal(); }}
               disabled={selectedCount === 0}
-              title="Mirrors your selection left-right, in place, within its own footprint."
+              {...({ title: 'Mirrors your selection left-right, in place, within its own footprint.' } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Flip Horizontal</Text>
             </TouchableOpacity>
@@ -151,7 +152,7 @@ export default function SelectorCard() {
               style={[s.toolbarBtn, selectedCount === 0 && s.toolbarBtnDisabled]}
               onPress={() => { onSelectTool(); onFlipVertical(); }}
               disabled={selectedCount === 0}
-              title="Mirrors your selection top-bottom, in place, within its own footprint."
+              {...({ title: 'Mirrors your selection top-bottom, in place, within its own footprint.' } as any)}
             >
               <Text style={[s.toolbarBtnTxt, selectedCount === 0 && s.toolbarBtnDisabledTxt]}>Flip Vertical</Text>
             </TouchableOpacity>
@@ -164,13 +165,13 @@ export default function SelectorCard() {
           <TouchableOpacity
             style={[s.replaceSwatch, { backgroundColor: recolorColor ?? theme.border }]}
             onPress={() => { onSelectTool(); cycleRecolor(); }}
-            title="Click to cycle through your palette colors."
+            {...({ title: 'Click to cycle through your palette colors.' } as any)}
           />
           <TouchableOpacity
             style={[s.toolbarBtn, !canRecolor && s.toolbarBtnDisabled]}
             onPress={() => { onSelectTool(); if (canRecolor) onRecolorSelection(recolorColor!); }}
             disabled={!canRecolor}
-            title="Recolors your current selection - and every diamond connected to it that shares its color - to the swatch on the left."
+            {...({ title: 'Recolors your current selection - and every diamond connected to it that shares its color - to the swatch on the left.' } as any)}
           >
             <Text style={[s.toolbarBtnTxt, !canRecolor && s.toolbarBtnDisabledTxt]}>Recolor Selected</Text>
           </TouchableOpacity>
