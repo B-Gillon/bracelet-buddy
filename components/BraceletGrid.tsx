@@ -2,11 +2,9 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import Svg, { Defs, Pattern, Rect, Polygon } from 'react-native-svg';
+import { useTheme } from '../context/ThemeContext';
 
 const DIAMOND = 40;
-const FILL    = '#f0efeb';
-const STROKE  = '#c8c6bc';
-const BORDER  = '#b0aea4';
 
 interface Props {
   width?:  number;
@@ -14,6 +12,11 @@ interface Props {
 }
 
 export default function BraceletGrid({ width = 440, height = 280 }: Props) {
+  const { theme } = useTheme();
+  const FILL   = theme.gridEmptyFill;
+  const STROKE = theme.gridStroke;
+  const BORDER = theme.borderStrong;
+
   const D = DIAMOND;
   const H = D / 2;
 

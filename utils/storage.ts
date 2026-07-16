@@ -5,6 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const STORAGE_KEYS = {
   session: 'braceletBuddy:session:v1',
   patternState: (patternId: string) => `braceletBuddy:patternState:v1:${patternId}`,
+  themePreference: 'braceletBuddy:themePreference:v1',
+  buildProgress: (patternId: string) => `braceletBuddy:buildProgress:v1:${patternId}`,
 };
 
 export async function storageGet<T>(key: string): Promise<T | null> {

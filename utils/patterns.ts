@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { PatternConfig, DualGrid, PatternGrid } from '../types/pattern';
+import { PatternConfig, DualGrid, PatternGrid, RowTechniques, BuildProgress } from '../types/pattern';
 
 // Displays the database-generated identity as a fixed 6-digit code
 // (e.g. "000001"), rather than a raw integer - the underlying column
@@ -21,6 +21,10 @@ export type SavedPatternSummary = {
   createdAt: number;
   gridMain: PatternGrid;
   gridGap: PatternGrid;
+};
+
+export type StartedPatternSummary = SavedPatternSummary & {
+  buildStartedAt: number;
 };
 
 // Upserts by (user_id, client_id) - matches the unique constraint on the
@@ -167,6 +171,64 @@ export async function listPatterns(
   return { patterns, error: null };
 }
 
+// Marks the first time this pattern's Build Center page is opened. The
+// `.is('build_started_at', null)` filter is what makes this idempotent -
+// once set, later calls (e.g. re-opening the same pattern from the picker)
+// simply match zero rows and no-op, so the original "first started"
+// timestamp is never overwritten. There's no separate "completed" state
+// yet - the step-by-step instructions themselves aren't built, so "started"
+// is the only status Build Center can actually track today.
+export async function markBuildStarted(
+  userId: string,
+  clientId: string
+): Promise<{ error: string | null }> {
+  const { error } = await supabase
+    .from('patterns')
+    .update({ build_started_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .eq('client_id', clientId)
+    .is('build_started_at', null);
+
+  return { error: error ? error.message : null };
+}
+
+// Build Center's picker - only patterns with a build_started_at set (see
+// markBuildStarted). Ordered most-recently-started first, unlike My
+// Designs' display_number ordering - this is meant to read as a "continue
+// building" list, not a catalog, so what you touched most recently should
+// surface first.
+export async function listStartedPatterns(
+  userId: string
+): Promise<{ patterns: StartedPatternSummary[] | null; error: string | null }> {
+  const { data, error } = await supabase
+    .from('patterns')
+    .select('client_id, display_number, name, type, color_count, palette, cols, rows, updated_at, created_at, grid_main, grid_gap, build_started_at')
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .not('build_started_at', 'is', null)
+    .order('build_started_at', { ascending: false });
+
+  if (error) return { patterns: null, error: error.message };
+
+  const patterns: StartedPatternSummary[] = (data ?? []).map(row => ({
+    clientId: row.client_id,
+    displayNumber: row.display_number,
+    name: row.name,
+    type: row.type,
+    colorCount: row.color_count,
+    palette: row.palette,
+    cols: row.cols,
+    rows: row.rows,
+    updatedAt: new Date(row.updated_at).getTime(),
+    createdAt: new Date(row.created_at).getTime(),
+    gridMain: row.grid_main,
+    gridGap: row.grid_gap,
+    buildStartedAt: new Date(row.build_started_at).getTime(),
+  }));
+
+  return { patterns, error: null };
+}
+
 export async function loadPattern(
   userId: string,
   clientId: string
@@ -199,4 +261,48 @@ export async function loadPattern(
   };
 
   return { config, dualGrid, error: null };
+}
+
+// Lighter-weight than loadPattern - just the two Build Center instruction
+// columns, used by useBuildProgress so it doesn't need to pull the full
+// grid data (BuildCenterScreen may already have that separately, from
+// either "Yes, Build It!" or its own loadPattern call).
+export async function loadBuildProgress(
+  userId: string,
+  clientId: string
+): Promise<{ rowTechniques: RowTechniques | null; buildProgress: BuildProgress | null; error: string | null }> {
+  const { data, error } = await supabase
+    .from('patterns')
+    .select('row_techniques, build_progress')
+    .eq('user_id', userId)
+    .eq('client_id', clientId)
+    .maybeSingle();
+
+  if (error) return { rowTechniques: null, buildProgress: null, error: error.message };
+  if (!data) return { rowTechniques: null, buildProgress: null, error: 'Pattern not found.' };
+
+  return {
+    rowTechniques: data.row_techniques ?? null,
+    buildProgress: data.build_progress ?? null,
+    error: null,
+  };
+}
+
+// Whole-array replace for both columns at once - simpler than tracking
+// per-row diffs, and cheap enough for a debounced auto-save (see
+// hooks/useBuildProgress.ts) since these arrays are small (one entry per
+// pattern row, not per diamond).
+export async function saveBuildProgress(
+  userId: string,
+  clientId: string,
+  rowTechniques: RowTechniques,
+  buildProgress: BuildProgress
+): Promise<{ error: string | null }> {
+  const { error } = await supabase
+    .from('patterns')
+    .update({ row_techniques: rowTechniques, build_progress: buildProgress })
+    .eq('user_id', userId)
+    .eq('client_id', clientId);
+
+  return { error: error ? error.message : null };
 }

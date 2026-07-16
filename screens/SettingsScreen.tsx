@@ -1,34 +1,48 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
+import { useTheme, ThemePreference } from '../context/ThemeContext';
+import { Theme } from '../constants/theme';
 import { updateProfile, isUsernameTaken } from '../utils/profiles';
 import { AVATAR_OPTIONS, DEFAULT_AVATAR_ID } from '../constants/avatars';
 
-const PURPLE = '#7c3aed';
+function makeInputStyle(theme: Theme): React.CSSProperties {
+  return {
+    boxSizing: 'border-box',
+    height: 40,
+    borderRadius: 8,
+    border: `1px solid ${theme.border}`,
+    backgroundColor: theme.surface,
+    paddingLeft: 12,
+    paddingRight: 12,
+    fontSize: 14,
+    color: theme.text,
+    width: '100%',
+  };
+}
 
-const inputStyle: React.CSSProperties = {
-  boxSizing: 'border-box',
-  height: 40,
-  borderRadius: 8,
-  border: '1px solid #e5e7eb',
-  backgroundColor: '#fff',
-  paddingLeft: 12,
-  paddingRight: 12,
-  fontSize: 14,
-  color: '#111',
-  width: '100%',
-};
+function makeReadOnlyInputStyle(theme: Theme): React.CSSProperties {
+  return {
+    ...makeInputStyle(theme),
+    backgroundColor: theme.surfaceMutedAlt,
+    color: theme.textFaint,
+  };
+}
 
-const readOnlyInputStyle: React.CSSProperties = {
-  ...inputStyle,
-  backgroundColor: '#f3f4f6',
-  color: '#6b7280',
-};
+const APPEARANCE_OPTIONS: { key: ThemePreference; label: string }[] = [
+  { key: 'light', label: 'Light' },
+  { key: 'dark', label: 'Dark' },
+  { key: 'system', label: 'System' },
+];
 
 export default function SettingsScreen() {
   const { user, loading: authLoading } = useAuth();
   const { profile, loading: loadingProfile, refreshProfile, setProfile } = useProfile();
+  const { theme, preference, setPreference } = useTheme();
+  const s = useMemo(() => makeStyles(theme), [theme]);
+  const inputStyle = useMemo(() => makeInputStyle(theme), [theme]);
+  const readOnlyInputStyle = useMemo(() => makeReadOnlyInputStyle(theme), [theme]);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -138,6 +152,26 @@ export default function SettingsScreen() {
         Everything here is optional - fill in as much or as little as you like.
       </Text>
 
+      <View style={s.formCard}>
+        <Text style={s.fieldLabel}>APPEARANCE</Text>
+        <View style={s.appearanceRow}>
+          {APPEARANCE_OPTIONS.map(option => (
+            <TouchableOpacity
+              key={option.key}
+              style={[s.appearanceBtn, preference === option.key && s.appearanceBtnActive]}
+              onPress={() => setPreference(option.key)}
+            >
+              <Text style={[s.appearanceBtnTxt, preference === option.key && s.appearanceBtnActiveTxt]}>
+                {option.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={s.appearanceHint}>
+          "System" follows your device's Light/Dark setting automatically.
+        </Text>
+      </View>
+
       {loadingProfile ? (
         <Text style={s.subtitle}>Loading your profile...</Text>
       ) : (
@@ -218,22 +252,30 @@ export default function SettingsScreen() {
   );
 }
 
-const s = StyleSheet.create({
-  container:         { flex: 1, padding: 40, maxWidth: 480, width: '100%', alignSelf: 'center' },
-  title:             { fontSize: 24, fontWeight: '700', color: '#111', marginBottom: 6, textAlign: 'center' },
-  subtitle:          { fontSize: 13, color: '#9ca3af', marginBottom: 24, textAlign: 'center' },
-  formCard:          { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 12, padding: 20, backgroundColor: '#fafafa' },
-  fieldLabel:        { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: PURPLE, marginBottom: 8 },
-  avatarRow:         { flexDirection: 'row', gap: 12 },
-  avatarSwatch:      { width: 56, height: 56, borderRadius: 28, padding: 3, borderWidth: 2, borderColor: 'transparent' },
-  avatarSwatchSelected: { borderColor: PURPLE },
-  avatarImage:       { width: '100%', height: '100%', borderRadius: 24 },
-  usernameCheckingTxt:  { fontSize: 11, color: '#9ca3af', marginTop: 6 },
-  usernameAvailableTxt: { fontSize: 11, color: '#059669', marginTop: 6, fontWeight: '600' },
-  usernameTakenTxt:     { fontSize: 11, color: '#dc2626', marginTop: 6, fontWeight: '600' },
-  errorTxt:          { fontSize: 12, color: '#dc2626', marginTop: 14 },
-  infoTxt:           { fontSize: 12, color: '#059669', marginTop: 14 },
-  submitBtn:         { backgroundColor: PURPLE, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 20 },
-  submitBtnDisabled: { opacity: 0.6 },
-  submitBtnTxt:      { color: '#fff', fontSize: 14, fontWeight: '700' },
-});
+function makeStyles(theme: Theme) {
+  return StyleSheet.create({
+    container:         { flex: 1, padding: 40, maxWidth: 480, width: '100%', alignSelf: 'center' },
+    title:             { fontSize: 24, fontWeight: '700', color: theme.text, marginBottom: 6, textAlign: 'center' },
+    subtitle:          { fontSize: 13, color: theme.textFaint, marginBottom: 24, textAlign: 'center' },
+    formCard:          { borderWidth: 1, borderColor: theme.border, borderRadius: 12, padding: 20, backgroundColor: theme.surfaceMuted, marginBottom: 20 },
+    fieldLabel:        { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: theme.purple, marginBottom: 8 },
+    appearanceRow:     { flexDirection: 'row', borderWidth: 1, borderColor: theme.border, borderRadius: 10, overflow: 'hidden' },
+    appearanceBtn:     { flex: 1, paddingVertical: 10, alignItems: 'center', backgroundColor: theme.surface },
+    appearanceBtnActive: { backgroundColor: theme.purpleTint },
+    appearanceBtnTxt:  { fontSize: 13, fontWeight: '600', color: theme.textMuted },
+    appearanceBtnActiveTxt: { color: theme.purple },
+    appearanceHint:    { fontSize: 11, color: theme.textFaint, marginTop: 8 },
+    avatarRow:         { flexDirection: 'row', gap: 12 },
+    avatarSwatch:      { width: 56, height: 56, borderRadius: 28, padding: 3, borderWidth: 2, borderColor: 'transparent' },
+    avatarSwatchSelected: { borderColor: theme.purple },
+    avatarImage:       { width: '100%', height: '100%', borderRadius: 24 },
+    usernameCheckingTxt:  { fontSize: 11, color: theme.textFaint, marginTop: 6 },
+    usernameAvailableTxt: { fontSize: 11, color: theme.success, marginTop: 6, fontWeight: '600' },
+    usernameTakenTxt:     { fontSize: 11, color: theme.danger, marginTop: 6, fontWeight: '600' },
+    errorTxt:          { fontSize: 12, color: theme.danger, marginTop: 14 },
+    infoTxt:           { fontSize: 12, color: theme.success, marginTop: 14 },
+    submitBtn:         { backgroundColor: theme.purple, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 20 },
+    submitBtnDisabled: { opacity: 0.6 },
+    submitBtnTxt:      { color: theme.textOnPurple, fontSize: 14, fontWeight: '700' },
+  });
+}

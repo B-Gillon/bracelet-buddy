@@ -1,15 +1,25 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { PatternConfig, DualGrid, DEFAULT_PATTERN_NAME, createEmptyGrid } from '../types/pattern';
+import { PatternConfig, DualGrid } from '../types/pattern';
 import ColorPickerScreen from './ColorPickerScreen';
-import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from '../utils/storage';
+import { storageRemove, STORAGE_KEYS } from '../utils/storage';
+import {
+  FloatingOp,
+  FLOATING_OP_DEFAULT_OFFSET,
+  snapshotGrid,
+  createDualGrid,
+  floodFillRegion,
+  flipSelection,
+} from '../utils/gridEditing';
+import { useGridDimensions } from '../hooks/useGridDimensions';
+import { usePatternPersistence } from '../hooks/usePatternPersistence';
 import { useAuth } from '../context/AuthContext';
-import { savePattern, formatPatternNumber, isPatternNameTaken, deletePattern } from '../utils/patterns';
 import { useTheme } from '../context/ThemeContext';
 import { Theme } from '../constants/theme';
 import { BuildEditorContext, BuildEditorContextValue } from '../context/BuildEditorContext';
 import PatternGridView, { FloatingCell } from '../components/PatternGridView';
 import GridEdgeControls from '../components/GridEdgeControls';
+import BuildScreenHeader from '../components/BuildScreenHeader';
 import {
   StartOverConfirmModal,
   DeletePatternModal,
@@ -21,230 +31,37 @@ import ColorsCard from '../components/build-cards/ColorsCard';
 import SelectorCard from '../components/build-cards/SelectorCard';
 import PatternToolCard from '../components/build-cards/PatternToolCard';
 import BehaviorControlsCard from '../components/build-cards/BehaviorControlsCard';
-import ModeIndicator from '../components/build-cards/ModeIndicator';
 
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-// How far to the right (in columns) a fresh Duplicate/Move copy starts out
-// from its source, so it's never dropped directly on top and looks
-// obviously separate the moment it appears.
-const FLOATING_OP_DEFAULT_OFFSET = 3;
-
-// A Duplicate or Move in progress - a snapshot of the selected diamonds'
-// original position/color plus a live (dr, dc) offset that changes as the
-// user drags it around. For Duplicate, dualGrid isn't touched until Done
-// commits it. For Move, the source is cleared immediately (see
-// beginFloatingOp) so it visibly looks picked-up rather than duplicated -
-// beforeSnapshot is the grid exactly as it was before that happened, so
-// Cancel can restore it exactly and Done can record a single Undo step
-// covering the whole pickup+drop.
-type FloatingOp = {
-  kind:  'duplicate' | 'move';
-  cells: FloatingCell[]; // original (pre-drag) pass/r/c/color
-  dr:    number;
-  dc:    number;
-  beforeSnapshot: DualGrid;
-};
-
-function snapshotGrid(grid: DualGrid): DualGrid {
-  return { main: grid.main.map(row => row.slice()), gap: grid.gap.map(row => row.slice()) };
-}
-
-// True geometric neighbors of a diamond in the dual-grid weave (see
-// utils/diamondGrid.ts for the actual position math). Diamonds only ever
-// share a full edge with a diamond from the OTHER pass - two main beads (or
-// two gap connectors) only ever touch at a single corner point, never an
-// edge - so a main(r,c) cell's real neighbors are the 4 gap cells around
-// it, and a gap(r,c) cell's real neighbors are the 4 main cells around it.
-// rows/cols here are the MAIN grid's dimensions (gap is always rows+1 x
-// cols+1).
-function neighborsOf(
-  pass: 'main' | 'gap',
-  r: number,
-  c: number,
-  rows: number,
-  cols: number
-): { pass: 'main' | 'gap'; r: number; c: number }[] {
-  if (pass === 'main') {
-    // Always in-bounds: gap is rows+1 x cols+1, and r/c are within the main
-    // grid's own rows/cols, so r, r+1 and c, c+1 always land inside gap.
-    return [
-      { pass: 'gap', r,     c     },
-      { pass: 'gap', r,     c: c + 1 },
-      { pass: 'gap', r: r + 1, c     },
-      { pass: 'gap', r: r + 1, c: c + 1 },
-    ];
-  }
-  const out: { pass: 'main' | 'gap'; r: number; c: number }[] = [];
-  if (r - 1 >= 0 && c - 1 >= 0)         out.push({ pass: 'main', r: r - 1, c: c - 1 });
-  if (r - 1 >= 0 && c <= cols - 1)      out.push({ pass: 'main', r: r - 1, c });
-  if (r <= rows - 1 && c - 1 >= 0)      out.push({ pass: 'main', r, c: c - 1 });
-  if (r <= rows - 1 && c <= cols - 1)   out.push({ pass: 'main', r, c });
-  return out;
-}
-
-// Shared flood-fill used by both "Magic Wand" (grow the selection) and
-// Recolor Selected (grow, then paint) - starting from every cell in
-// `seeds`, walks the true touching neighbors (crossing between main and
-// gap, per neighborsOf above) through same-color cells and returns the
-// seeds plus everything reachable. Pure function (no component state) so
-// both call sites can use it without duplicating the traversal.
-function floodFillRegion(
-  seeds: Set<string>,
-  dualGrid: DualGrid,
-  rows: number,
-  cols: number
-): Set<string> {
-  const region = new Set<string>(seeds);
-  const stack: { pass: 'main' | 'gap'; r: number; c: number; color: string | null }[] = [];
-  seeds.forEach(key => {
-    const [pass, rStr, cStr] = key.split(':') as ['main' | 'gap', string, string];
-    const r = Number(rStr);
-    const c = Number(cStr);
-    const grid = pass === 'main' ? dualGrid.main : dualGrid.gap;
-    const color = grid[r]?.[c] ?? null;
-    stack.push({ pass, r, c, color });
-  });
-
-  while (stack.length > 0) {
-    const cur = stack.pop()!;
-    for (const n of neighborsOf(cur.pass, cur.r, cur.c, rows, cols)) {
-      const key = n.pass + ':' + n.r + ':' + n.c;
-      if (region.has(key)) continue;
-      const grid = n.pass === 'main' ? dualGrid.main : dualGrid.gap;
-      const color = grid[n.r]?.[n.c] ?? null;
-      if (color !== cur.color) continue;
-      region.add(key);
-      stack.push({ pass: n.pass, r: n.r, c: n.c, color });
-    }
-  }
-
-  return region;
-}
-
-// Mirrors a selection horizontally or vertically as one rigid piece - the
-// shape's outline moves along with its colors, like flipping a sticker,
-// not just a recolor of whatever cells happened to already be selected
-// (that was the Wave 9 v1 bug: for an asymmetric shape like an arrow, most
-// mirrored destinations landed outside the original selection and got
-// silently dropped, so the outline never appeared to move). Main and gap
-// each use their OWN bounding box independently (rather than one shared
-// box across both) - this keeps every mirrored cell landing on a valid
-// same-type slot (a bead never needs to become a connector or vice versa)
-// without any special-casing. For a selection that forms a naturally
-// bordered rectangle - the common case, e.g. a drag-selected block or the
-// result of Magic Wand/Select Same Color - the two passes' bounding boxes
-// share the same center, so the combined result reads as one consistent
-// flip anyway.
-//
-// For every originally-selected cell, its color is written to its mirror
-// position (mirror is its own inverse within a fixed bounding box, so this
-// naturally produces the fully-swapped result for cells whose mirror
-// partner was also selected). Any originally-selected cell whose mirror
-// partner was NOT also selected is on its way to being vacated - it isn't
-// part of the new (mirrored) footprint, so it's cleared to blank. Always
-// stays within the pass's own bounding box, so this never needs off-grid
-// handling the way Duplicate/Move does. Returns both the grid writes and
-// the new selection footprint, since the shape moving means the selection
-// itself has to move with it - the caller applies both together.
-function flipSelection(
-  selectedCells: Set<string>,
-  dualGrid: DualGrid,
-  axis: 'horizontal' | 'vertical'
-): { writes: Map<string, string | null>; newSelection: Set<string> } {
-  const writes = new Map<string, string | null>();
-  const newSelection = new Set<string>();
-
-  (['main', 'gap'] as const).forEach(pass => {
-    const cells: { r: number; c: number }[] = [];
-    const originalKeys = new Set<string>();
-    selectedCells.forEach(key => {
-      const [p, rStr, cStr] = key.split(':') as ['main' | 'gap', string, string];
-      if (p !== pass) return;
-      const r = Number(rStr);
-      const c = Number(cStr);
-      cells.push({ r, c });
-      originalKeys.add(r + ':' + c);
-    });
-    if (cells.length === 0) return;
-
-    const grid = pass === 'main' ? dualGrid.main : dualGrid.gap;
-    const rMin = Math.min(...cells.map(cell => cell.r));
-    const rMax = Math.max(...cells.map(cell => cell.r));
-    const cMin = Math.min(...cells.map(cell => cell.c));
-    const cMax = Math.max(...cells.map(cell => cell.c));
-
-    function mirrorOf(cell: { r: number; c: number }): { r: number; c: number } {
-      return {
-        r: axis === 'vertical' ? rMin + rMax - cell.r : cell.r,
-        c: axis === 'horizontal' ? cMin + cMax - cell.c : cell.c,
-      };
-    }
-
-    for (const cell of cells) {
-      const dest = mirrorOf(cell);
-      const color = grid[cell.r]?.[cell.c] ?? null;
-      const destKey = pass + ':' + dest.r + ':' + dest.c;
-      writes.set(destKey, color);
-      newSelection.add(destKey);
-    }
-
-    for (const cell of cells) {
-      const mirrorPartner = mirrorOf(cell);
-      const partnerWasSelected = originalKeys.has(mirrorPartner.r + ':' + mirrorPartner.c);
-      if (!partnerWasSelected) {
-        const key = pass + ':' + cell.r + ':' + cell.c;
-        if (!writes.has(key)) writes.set(key, null);
-      }
-    }
-  });
-
-  return { writes, newSelection };
-}
-
-// Raw web CSS (not an RN StyleSheet), so it isn't part of the theme-object
-// plumbing below - the color mirrors theme.text intentionally.
-const titleInputStyle: React.CSSProperties = {
-  fontSize: 18,
-  fontWeight: 700,
-  color: '#111',
-  border: 'none',
-  background: 'transparent',
-  padding: 0,
-  minWidth: 160,
-  maxWidth: 320,
-};
-
-function createDualGrid(mainRows: number, mainCols: number): DualGrid {
-  return {
-    main: createEmptyGrid(mainCols, mainRows),
-    gap:  createEmptyGrid(mainCols + 1, mainRows + 1),
-  };
-}
+// Pure grid-editing logic (neighbor math, flood-fill, flip, snapshotting,
+// the FloatingOp type, the default floating-copy offset) lives in
+// utils/gridEditing.ts now - none of it depends on component state, so it's
+// just imported here. BuildScreen still owns all the actual editor STATE
+// (dualGrid, selectedCells, floatingOp, history) directly, same as before.
+// The header's title-input CSS and its ModeIndicator/toolbar JSX now live
+// in components/BuildScreenHeader.tsx.
 
 export default function BuildScreen({
   config,
   onConfigChange,
   onExit,
   onRequireAccount,
+  onBuildPattern,
 }: {
   config:           PatternConfig;
   onConfigChange:   (config: PatternConfig) => void;
   onExit:           () => void;
   onRequireAccount: () => void;
+  // "Yes, Build It!" on the post-save modal - hands the just-saved
+  // config/dualGrid up to App.tsx so Build Center can show them directly,
+  // without a network round-trip.
+  onBuildPattern:   (config: PatternConfig, dualGrid: DualGrid) => void;
 }) {
   const { user } = useAuth();
-  const isSignedIn = !!user;
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
 
-  const [name, setName]                         = useState(config.name);
-  const [nameStatus, setNameStatus]             = useState<
-    'idle' | 'checking' | 'available' | 'taken' | 'error'
-  >('idle');
-  const [saveAsNewNameStatus, setSaveAsNewNameStatus] = useState<
-    'idle' | 'checking' | 'available' | 'taken' | 'error'
-  >('idle');
   const [dualGrid, setDualGrid]                 = useState<DualGrid>(() => createDualGrid(config.rows, config.cols));
   const [palette, setPalette]                   = useState<(string | null)[]>(config.palette);
   const [selectedColorIdx, setSelectedColorIdx] = useState(0);
@@ -254,17 +71,21 @@ export default function BuildScreen({
   const [manualZoomOverride, setManualZoomOverride] = useState<number | null>(null);
   const [gridViewportWidth, setGridViewportWidth] = useState(0);
   const [showStartOverConfirm, setShowStartOverConfirm] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [isDeleting, setIsDeleting]             = useState(false);
-  const [showAccountRequiredModal, setShowAccountRequiredModal] = useState(false);
-  const [showSaveAsNewModal, setShowSaveAsNewModal] = useState(false);
-  const [saveAsNewName, setSaveAsNewName]       = useState('');
-  const [showSavedModal, setShowSavedModal]     = useState(false);
-  const [savedModalMode, setSavedModalMode]     = useState<'ask' | 'coming-soon'>('ask');
-  const [isSavingCloud, setIsSavingCloud]       = useState(false);
-  const [cloudSaveError, setCloudSaveError]     = useState<string | null>(null);
-  const [hydrated, setHydrated]                 = useState(false);
-  const saveTimeoutRef                          = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load/save/name/delete concerns for this pattern - hydration, debounced
+  // autosave, name-availability checks, and the Save/Save As New/Delete
+  // handlers. BuildScreen keeps dualGrid/palette themselves (needed
+  // directly for grid editing below) and just passes them in.
+  const {
+    name, setName, nameStatus,
+    isSavingCloud, cloudSaveError,
+    showDeleteConfirm, setShowDeleteConfirm, isDeleting,
+    showAccountRequiredModal, setShowAccountRequiredModal,
+    showSaveAsNewModal, setShowSaveAsNewModal,
+    saveAsNewName, setSaveAsNewName, saveAsNewNameStatus,
+    showSavedModal, setShowSavedModal,
+    handlePaletteChange, handleSavePress, openSaveAsNew, handleSaveAsNew, handleDeletePattern,
+  } = usePatternPersistence(config, onConfigChange, onExit, user, dualGrid, palette, setPalette, setDualGrid);
 
   const [toolMode, setToolMode]                 = useState<'paint' | 'select' | 'erase'>('paint');
   const [activeTab, setActiveTab] = useState<'selector' | 'pattern-tool' | null>(null);
@@ -310,78 +131,10 @@ export default function BuildScreen({
   }, []);
   const cardRowMinHeight = Math.max(0, viewportHeight - cardRowTop);
 
-  // On mount, check local storage for previously-cached progress on this
-  // exact pattern (e.g. from before a refresh) and restore it instead of
-  // starting from the blank grid / initial palette.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const saved = await storageGet<{ dualGrid: DualGrid; palette: (string | null)[] }>(
-        STORAGE_KEYS.patternState(config.id)
-      );
-      if (!cancelled && saved) {
-        setDualGrid(saved.dualGrid);
-        setPalette(saved.palette);
-      }
-      if (!cancelled) setHydrated(true);
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.id]);
-
-  // Debounced auto-save: waits until painting/edits pause briefly before
-  // writing, so a click-and-drag stroke doesn't trigger a write per cell.
-  useEffect(() => {
-    if (!hydrated) return; // don't stomp saved data with the initial defaults pre-hydration
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(() => {
-      storageSet(STORAGE_KEYS.patternState(config.id), { dualGrid, palette });
-    }, 400);
-    return () => {
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    };
-  }, [dualGrid, palette, hydrated, config.id]);
+  // Hydration, autosave, and name-availability checks all live in
+  // usePatternPersistence now (called above).
   const historyRef                              = useRef<DualGrid[]>([]);
   const futureRef                               = useRef<DualGrid[]>([]); // redo stack
-
-  // Live "is this name available" check on the title bar, same debounced
-  // pattern as Settings' username check. Excludes this pattern's own
-  // client_id so re-saving under the name it already has doesn't flag
-  // itself as a collision.
-  useEffect(() => {
-    const trimmed = name.trim();
-    if (!trimmed || !user) {
-      setNameStatus('idle');
-      return;
-    }
-
-    setNameStatus('checking');
-    const timeout = setTimeout(async () => {
-      const { taken, error } = await isPatternNameTaken(user.id, trimmed, config.id);
-      setNameStatus(error ? 'error' : taken ? 'taken' : 'available');
-    }, 500);
-
-    return () => clearTimeout(timeout);
-  }, [name, user, config.id]);
-
-  // Same check for the Save As New modal's name field - no exclusion here,
-  // since a copy sharing the current pattern's own name would be a real
-  // duplicate too.
-  useEffect(() => {
-    const trimmed = saveAsNewName.trim();
-    if (!trimmed || !user || !showSaveAsNewModal) {
-      setSaveAsNewNameStatus('idle');
-      return;
-    }
-
-    setSaveAsNewNameStatus('checking');
-    const timeout = setTimeout(async () => {
-      const { taken, error } = await isPatternNameTaken(user.id, trimmed);
-      setSaveAsNewNameStatus(error ? 'error' : taken ? 'taken' : 'available');
-    }, 500);
-
-    return () => clearTimeout(timeout);
-  }, [saveAsNewName, user, showSaveAsNewModal]);
 
   const GRID_BASE = 40;
   const zoom = manualZoomOverride ?? ZOOM_LEVELS[zoomIdx];
@@ -844,78 +597,13 @@ export default function BuildScreen({
     setFloatingOp(null);
   }
 
-  function handlePaletteChange(newPalette: (string | null)[], newColorCount: number) {
-    setPalette(newPalette);
-    onConfigChange({ ...config, palette: newPalette, colorCount: newColorCount, updatedAt: Date.now() });
-  }
-
-  function addRowTop() {
-    pushHistory();
-    const newMainRow = Array.from({ length: config.cols }, (): null => null);
-    const newGapRow  = Array.from({ length: config.cols + 1 }, (): null => null);
-    setDualGrid(prev => ({ main: [newMainRow, ...prev.main], gap: [newGapRow, ...prev.gap] }));
-    onConfigChange({ ...config, rows: config.rows + 1, updatedAt: Date.now() });
-  }
-
-  function removeRowTop() {
-    if (config.rows <= 1) return;
-    pushHistory();
-    setDualGrid(prev => ({ main: prev.main.slice(1), gap: prev.gap.slice(1) }));
-    onConfigChange({ ...config, rows: config.rows - 1, updatedAt: Date.now() });
-  }
-
-  function addRowBottom() {
-    pushHistory();
-    const newMainRow = Array.from({ length: config.cols }, (): null => null);
-    const newGapRow  = Array.from({ length: config.cols + 1 }, (): null => null);
-    setDualGrid(prev => ({ main: [...prev.main, newMainRow], gap: [...prev.gap, newGapRow] }));
-    onConfigChange({ ...config, rows: config.rows + 1, updatedAt: Date.now() });
-  }
-
-  function removeRowBottom() {
-    if (config.rows <= 1) return;
-    pushHistory();
-    setDualGrid(prev => ({ main: prev.main.slice(0, -1), gap: prev.gap.slice(0, -1) }));
-    onConfigChange({ ...config, rows: config.rows - 1, updatedAt: Date.now() });
-  }
-
-  function increaseLength() {
-    pushHistory();
-    setDualGrid(prev => ({
-      main: prev.main.map(row => [...row, null]),
-      gap:  prev.gap.map(row => [...row, null]),
-    }));
-    onConfigChange({ ...config, cols: config.cols + 1, updatedAt: Date.now() });
-  }
-
-  function decreaseLength() {
-    if (config.cols <= 1) return;
-    pushHistory();
-    setDualGrid(prev => ({
-      main: prev.main.map(row => row.slice(0, -1)),
-      gap:  prev.gap.map(row => row.slice(0, -1)),
-    }));
-    onConfigChange({ ...config, cols: config.cols - 1, updatedAt: Date.now() });
-  }
-
-  function addColumnLeft() {
-    pushHistory();
-    setDualGrid(prev => ({
-      main: prev.main.map(row => [null, ...row]),
-      gap:  prev.gap.map(row => [null, ...row]),
-    }));
-    onConfigChange({ ...config, cols: config.cols + 1, updatedAt: Date.now() });
-  }
-
-  function removeColumnLeft() {
-    if (config.cols <= 1) return;
-    pushHistory();
-    setDualGrid(prev => ({
-      main: prev.main.map(row => row.slice(1)),
-      gap:  prev.gap.map(row => row.slice(1)),
-    }));
-    onConfigChange({ ...config, cols: config.cols - 1, updatedAt: Date.now() });
-  }
+  // Mechanical row/column add-or-remove operations - extracted to
+  // useGridDimensions since they don't interact with tool/selection state,
+  // just dualGrid + config together.
+  const {
+    addRowTop, removeRowTop, addRowBottom, removeRowBottom,
+    increaseLength, decreaseLength, addColumnLeft, removeColumnLeft,
+  } = useGridDimensions(config, onConfigChange, setDualGrid, pushHistory);
 
   function handleClear() {
     pushHistory();
@@ -924,120 +612,9 @@ export default function BuildScreen({
     setFloatingOp(null);
   }
 
-  async function handleSave() {
-    // Local save always happens first, and always succeeds - this is the
-    // part the offline-first design depends on, and it's never blocked by
-    // the cloud sync below.
-    const updatedConfig: PatternConfig = { ...config, name, palette, updatedAt: Date.now() };
-    onConfigChange(updatedConfig);
-
-    if (!user) return; // handleSavePress already gates this - just a safety net
-
-    setIsSavingCloud(true);
-    setCloudSaveError(null);
-    const { displayNumber, error } = await savePattern(user.id, updatedConfig, dualGrid);
-
-    // If the user never gave this pattern a real name, the first
-    // successful save is what assigns its permanent "Bracelet #N" name -
-    // using the number the database just generated. This can't happen any
-    // earlier, since that number doesn't exist until the row is actually
-    // inserted.
-    if (!error && displayNumber != null && updatedConfig.name === DEFAULT_PATTERN_NAME) {
-      const finalName = `Bracelet #${formatPatternNumber(displayNumber)}`;
-      const renamedConfig: PatternConfig = { ...updatedConfig, name: finalName };
-      setName(finalName);
-      onConfigChange(renamedConfig);
-      const renameResult = await savePattern(user.id, renamedConfig, dualGrid);
-      if (renameResult.error) setCloudSaveError(renameResult.error);
-    }
-
-    setIsSavingCloud(false);
-
-    if (error) setCloudSaveError(error);
-    setSavedModalMode('ask');
-    setShowSavedModal(true);
-  }
-
-  function handleSavePress() {
-    if (!isSignedIn) {
-      setShowAccountRequiredModal(true);
-      return;
-    }
-    if (nameStatus === 'taken' || nameStatus === 'checking') return;
-    handleSave();
-  }
-
-  function openSaveAsNew() {
-    if (!isSignedIn) {
-      setShowAccountRequiredModal(true);
-      return;
-    }
-    setSaveAsNewName(`${name} copy`);
-    setShowSaveAsNewModal(true);
-  }
-
-  async function handleSaveAsNew() {
-    if (!user) return;
-    if (saveAsNewNameStatus === 'taken' || saveAsNewNameStatus === 'checking') return;
-
-    const now = Date.now();
-    const newConfig: PatternConfig = {
-      ...config,
-      id: String(now),
-      name: saveAsNewName.trim() || `${name} copy`,
-      palette,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    setShowSaveAsNewModal(false);
-    setIsSavingCloud(true);
-    setCloudSaveError(null);
-    const { displayNumber, error } = await savePattern(user.id, newConfig, dualGrid);
-
-    // Same placeholder-rename logic as a normal Save, for the rare case
-    // where a never-yet-named pattern gets copied before ever being saved.
-    let finalConfig = newConfig;
-    if (!error && displayNumber != null && newConfig.name === DEFAULT_PATTERN_NAME) {
-      const finalName = `Bracelet #${formatPatternNumber(displayNumber)}`;
-      finalConfig = { ...newConfig, name: finalName };
-      const renameResult = await savePattern(user.id, finalConfig, dualGrid);
-      if (renameResult.error) setCloudSaveError(renameResult.error);
-    }
-
-    setIsSavingCloud(false);
-    if (error) setCloudSaveError(error);
-
-    // Mirror "Save As" convention: focus switches to the new copy going
-    // forward. The original pattern's saved row is left completely
-    // untouched.
-    setName(finalConfig.name);
-    onConfigChange(finalConfig);
-    setSavedModalMode('ask');
-    setShowSavedModal(true);
-  }
-
-  // Soft delete - the row (if this pattern was ever actually saved) stays
-  // in the database with deleted_at set, it just no longer shows up in My
-  // Designs. If this pattern was never saved (signed out, or saved locally
-  // but never synced), there's nothing to delete server-side - just clear
-  // the local cache and leave, same as Start Over.
-  async function handleDeletePattern() {
-    setShowDeleteConfirm(false);
-
-    if (user) {
-      setIsDeleting(true);
-      const { error } = await deletePattern(user.id, config.id);
-      setIsDeleting(false);
-      if (error) {
-        setCloudSaveError(error);
-        return; // stay on the screen if the delete itself failed
-      }
-    }
-
-    storageRemove(STORAGE_KEYS.patternState(config.id));
-    onExit();
-  }
+  // handleSave/handleSavePress/openSaveAsNew/handleSaveAsNew/
+  // handleDeletePattern all live in usePatternPersistence now (called
+  // above).
 
   if (showColorPicker) {
     return (
@@ -1057,12 +634,20 @@ export default function BuildScreen({
   // PatternToolCard, BehaviorControlsCard) - BuildScreen still owns all of
   // this state directly (it needs it for handleCellPress/Drag above), it
   // just also hands it down via context instead of individual props.
+  function handleSetPaletteColor(idx: number, color: string) {
+    const newPalette = [...palette];
+    newPalette[idx] = color;
+    handlePaletteChange(newPalette, config.colorCount);
+    setSelectedColorIdx(idx);
+  }
+
   const buildEditorValue: BuildEditorContextValue = {
     palette,
     colorCount: config.colorCount,
     selectedColorIdx,
     setSelectedColorIdx,
     onOpenColorPicker: () => setShowColorPicker(true),
+    onSetPaletteColor: handleSetPaletteColor,
     toolMode,
     onSelectTool: selectSelectTool,
     onColorTool: selectColorTool,
@@ -1096,102 +681,31 @@ export default function BuildScreen({
 
   // Header as a separate component so stickyHeaderIndices can reference it
   const header = (
-    <View style={s.header}>
-      <View style={s.headerTopRow}>
-        <View style={s.titleRowLeft}>
-          <input
-            type="text"
-            value={name}
-            onChange={e => {
-              const newName = e.target.value;
-              setName(newName);
-              onConfigChange({ ...config, name: newName });
-            }}
-            style={titleInputStyle}
-          />
-
-          {nameStatus === 'taken' && (
-            <Text style={s.nameTakenTxt}>Name already used</Text>
-          )}
-
-          <TouchableOpacity
-            style={[s.toolbarBtn, s.orientationBtn]}
-            onPress={() => setOrientation(o => (o === 'horizontal' ? 'vertical' : 'horizontal'))}
-          >
-            <Text style={s.toolbarBtnTxt}>
-              {orientation === 'horizontal' ? 'Show Vertical' : 'Show Horizontal'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={s.toolbarBtn}
-            onPress={handleFitToWindow}
-          >
-            <Text style={s.toolbarBtnTxt}>Fit to Window</Text>
-          </TouchableOpacity>
-
-          <View style={s.zoomRow}>
-            <TouchableOpacity
-              style={[s.zoomBtn, zoomIdx <= 0 && manualZoomOverride == null && s.zoomBtnDisabled]}
-              onPress={stepZoomDown}
-            >
-              <Text style={s.zoomBtnTxt}>-</Text>
-            </TouchableOpacity>
-            <Text style={s.zoomLabel}>{Math.round(zoom * 100)}%</Text>
-            <TouchableOpacity
-              style={[s.zoomBtn, zoomIdx >= ZOOM_LEVELS.length - 1 && manualZoomOverride == null && s.zoomBtnDisabled]}
-              onPress={stepZoomUp}
-            >
-              <Text style={s.zoomBtnTxt}>+</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ModeIndicator />
-        </View>
-
-        <View style={s.headerRightGroup}>
-          <TouchableOpacity style={s.toolbarBtn} onPress={() => setShowStartOverConfirm(true)}>
-            <Text style={s.toolbarBtnTxt}>Start Over</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.toolbarBtn} onPress={handleUndo}>
-            <Text style={s.toolbarBtnTxt}>Undo</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.toolbarBtn} onPress={handleRedo}>
-            <Text style={s.toolbarBtnTxt}>Redo</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.toolbarBtn} onPress={handleClear}>
-            <Text style={s.toolbarBtnTxt}>Clear</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.toolbarBtn} onPress={openSaveAsNew}>
-            <Text style={s.toolbarBtnTxt}>Save As New</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              s.toolbarBtn,
-              s.saveBtn,
-              (isSavingCloud || nameStatus === 'taken' || nameStatus === 'checking') && s.toolbarBtnDisabled,
-            ]}
-            onPress={handleSavePress}
-            disabled={isSavingCloud || nameStatus === 'taken' || nameStatus === 'checking'}
-          >
-            <Text style={s.saveBtnTxt}>{isSavingCloud ? 'Saving...' : 'Save'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[s.toolbarBtn, isDeleting && s.toolbarBtnDisabled]}
-            onPress={() => setShowDeleteConfirm(true)}
-            disabled={isDeleting}
-          >
-            <Text style={s.toolbarBtnTxt}>{isDeleting ? 'Deleting...' : 'Delete'}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
+    <BuildScreenHeader
+      name={name}
+      onNameChange={newName => {
+        setName(newName);
+        onConfigChange({ ...config, name: newName });
+      }}
+      nameStatus={nameStatus}
+      orientation={orientation}
+      onToggleOrientation={() => setOrientation(o => (o === 'horizontal' ? 'vertical' : 'horizontal'))}
+      onFitToWindow={handleFitToWindow}
+      zoom={zoom}
+      atMinZoom={zoomIdx <= 0 && manualZoomOverride == null}
+      atMaxZoom={zoomIdx >= ZOOM_LEVELS.length - 1 && manualZoomOverride == null}
+      onStepZoomDown={stepZoomDown}
+      onStepZoomUp={stepZoomUp}
+      onStartOver={() => setShowStartOverConfirm(true)}
+      onUndo={handleUndo}
+      onRedo={handleRedo}
+      onClear={handleClear}
+      onSaveAsNew={openSaveAsNew}
+      onSave={handleSavePress}
+      isSavingCloud={isSavingCloud}
+      onDeleteRequest={() => setShowDeleteConfirm(true)}
+      isDeleting={isDeleting}
+    />
   );
 
   // Lives beside the grid, not above it - collapsible via sidebarCollapsed.
@@ -1480,11 +994,12 @@ export default function BuildScreen({
 
         <SavedModal
           visible={showSavedModal}
-          mode={savedModalMode}
           cloudSaveError={cloudSaveError}
           onNotNow={() => setShowSavedModal(false)}
-          onBuildIt={() => setSavedModalMode('coming-soon')}
-          onGotIt={() => setShowSavedModal(false)}
+          onBuildIt={() => {
+            setShowSavedModal(false);
+            onBuildPattern(config, dualGrid);
+          }}
         />
       </>
     </BuildEditorContext.Provider>
@@ -1495,11 +1010,6 @@ function makeStyles(theme: Theme) {
   return StyleSheet.create({
     screen:             { flex: 1, backgroundColor: theme.background },
     content:            { flexGrow: 1 },
-    header:             { backgroundColor: theme.surface, paddingHorizontal: 40, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.border },
-    headerTopRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
-    titleRowLeft:       { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-    nameTakenTxt:       { fontSize: 11, fontWeight: '600', color: theme.danger },
-    headerRightGroup:   { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' },
     colorsRow:          { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
     selectorStandaloneBtn: { alignSelf: 'flex-start' },
     circleBtn:          { width: 28, height: 28, borderRadius: 14 },
@@ -1530,19 +1040,11 @@ function makeStyles(theme: Theme) {
     collapsedColorsCol: { flexDirection: 'column', gap: 6, alignItems: 'center' },
     collapsedCircleBtn: { width: 22, height: 22, borderRadius: 11 },
     toolbarBtn:         { borderWidth: 1, borderColor: theme.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: theme.surfaceMuted },
-    orientationBtn:     { minWidth: 132, alignItems: 'center' },
     toolbarBtnActive:   { backgroundColor: theme.purpleTint, borderColor: theme.purple },
     toolbarBtnActiveTxt:{ color: theme.purple },
     toolbarBtnDisabled: { opacity: 0.4 },
     toolbarBtnDisabledTxt: { color: theme.textFaint },
     toolbarBtnTxt:      { fontSize: 12, fontWeight: '600', color: theme.textMuted },
-    saveBtn:            { backgroundColor: theme.purple, borderColor: theme.purple },
-    saveBtnTxt:         { fontSize: 12, fontWeight: '700', color: theme.textOnPurple },
-    zoomRow:            { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: theme.border, borderRadius: 8, overflow: 'hidden' },
-    zoomBtn:            { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.surfaceMutedAlt },
-    zoomBtnDisabled:    { opacity: 0.35 },
-    zoomBtnTxt:         { fontSize: 18, color: theme.textMuted },
-    zoomLabel:          { width: 48, textAlign: 'center', fontSize: 12, fontWeight: '600', color: theme.textMuted },
     gridScrollWrapper:  { flexShrink: 1, minWidth: 0 },
     gridScroll:         { flexShrink: 1 },
     gridContent:        {},

@@ -1,13 +1,16 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-
-const PURPLE = '#7c3aed';
+import { useTheme } from '../context/ThemeContext';
+import { Theme } from '../constants/theme';
 
 export default function DesignCenterScreen({
   onStartFromScratch,
 }: {
   onStartFromScratch: () => void;
 }) {
+  const { theme } = useTheme();
+  const s = useMemo(() => makeStyles(theme), [theme]);
+
   return (
     <View style={s.container}>
       <Text style={s.title}>Design Center</Text>
@@ -38,15 +41,17 @@ export default function DesignCenterScreen({
   );
 }
 
-const s = StyleSheet.create({
-  container:    { flex: 1, padding: 40, maxWidth: 900, width: '100%', alignSelf: 'center' },
-  title:        { fontSize: 26, fontWeight: '700', color: '#111', marginBottom: 4 },
-  subtitle:     { fontSize: 14, color: '#9ca3af', marginBottom: 28 },
-  cardGrid:     { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
-  card:         { flexBasis: 240, flexGrow: 1, borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 12, padding: 20, backgroundColor: '#fafafa', gap: 6 },
-  cardDisabled: { opacity: 0.6 },
-  cardEmoji:    { fontSize: 28, marginBottom: 4 },
-  cardTitle:    { fontSize: 16, fontWeight: '700', color: '#111' },
-  cardDesc:     { fontSize: 12, color: '#6b7280' },
-  comingSoon:   { fontSize: 11, fontWeight: '700', color: PURPLE, marginTop: 6 },
-});
+function makeStyles(theme: Theme) {
+  return StyleSheet.create({
+    container:    { flex: 1, padding: 40, maxWidth: 900, width: '100%', alignSelf: 'center' },
+    title:        { fontSize: 26, fontWeight: '700', color: theme.text, marginBottom: 4 },
+    subtitle:     { fontSize: 14, color: theme.textFaint, marginBottom: 28 },
+    cardGrid:     { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+    card:         { flexBasis: 240, flexGrow: 1, borderWidth: 1, borderColor: theme.border, borderRadius: 12, padding: 20, backgroundColor: theme.surfaceMuted, gap: 6 },
+    cardDisabled: { opacity: 0.6 },
+    cardEmoji:    { fontSize: 28, marginBottom: 4 },
+    cardTitle:    { fontSize: 16, fontWeight: '700', color: theme.text },
+    cardDesc:     { fontSize: 12, color: theme.textSubtle },
+    comingSoon:   { fontSize: 11, fontWeight: '700', color: theme.purple, marginTop: 6 },
+  });
+}

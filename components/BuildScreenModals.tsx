@@ -4,23 +4,26 @@ import { Theme } from '../constants/theme';
 import { useTheme } from '../context/ThemeContext';
 
 // The four small, self-contained modals from BuildScreen.tsx: Start Over
-// confirm, Account Required, Save As New, and Saved/Coming Soon. Bundled
-// into one file since each is tiny on its own; they share one stylesheet.
+// confirm, Account Required, Save As New, and Saved (which offers to send
+// you into Build Center). Bundled into one file since each is tiny on its
+// own; they share one stylesheet.
 
-const saveAsNewInputStyle: React.CSSProperties = {
-  boxSizing: 'border-box',
-  height: 40,
-  borderRadius: 8,
-  border: '1px solid #e5e7eb',
-  backgroundColor: '#fff',
-  paddingLeft: 12,
-  paddingRight: 12,
-  fontSize: 14,
-  color: '#111',
-  width: '100%',
-  marginTop: 4,
-  marginBottom: 4,
-};
+function makeSaveAsNewInputStyle(theme: Theme): React.CSSProperties {
+  return {
+    boxSizing: 'border-box',
+    height: 40,
+    borderRadius: 8,
+    border: `1px solid ${theme.border}`,
+    backgroundColor: theme.surface,
+    paddingLeft: 12,
+    paddingRight: 12,
+    fontSize: 14,
+    color: theme.text,
+    width: '100%',
+    marginTop: 4,
+    marginBottom: 4,
+  };
+}
 
 export function StartOverConfirmModal({
   visible, onCancel, onConfirm,
@@ -130,6 +133,7 @@ export function SaveAsNewModal({
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
+  const saveAsNewInputStyle = useMemo(() => makeSaveAsNewInputStyle(theme), [theme]);
   const blocked = nameStatus === 'taken' || nameStatus === 'checking';
 
   return (
@@ -171,14 +175,15 @@ export function SaveAsNewModal({
 }
 
 export function SavedModal({
-  visible, mode, cloudSaveError, onNotNow, onBuildIt, onGotIt,
+  visible, cloudSaveError, onNotNow, onBuildIt,
 }: {
   visible: boolean;
-  mode: 'ask' | 'coming-soon';
   cloudSaveError: string | null;
   onNotNow: () => void;
+  // Navigates straight to that pattern's Build Center page now - this used
+  // to just flip to a "Coming Soon" panel in-place, back when Build Center
+  // didn't exist yet as a real destination.
   onBuildIt: () => void;
-  onGotIt: () => void;
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
@@ -187,38 +192,22 @@ export function SavedModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onNotNow}>
       <View style={s.modalOverlay}>
         <View style={s.modalCard}>
-          {mode === 'ask' ? (
-            <>
-              <Text style={s.modalTitle}>
-                {cloudSaveError ? 'Saved on This Device' : 'Saved!'}
-              </Text>
-              <Text style={s.modalText}>
-                {cloudSaveError
-                  ? "We'll sync it online once you're connected again. Want to build this bracelet now?"
-                  : 'Want to build this bracelet now?'}
-              </Text>
-              <View style={s.modalButtonsRow}>
-                <TouchableOpacity style={s.modalCancelBtn} onPress={onNotNow}>
-                  <Text style={s.modalCancelTxt}>Not Now</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onBuildIt}>
-                  <Text style={s.modalConfirmTxt}>Yes, Build It!</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={s.modalTitle}>Coming Soon!</Text>
-              <Text style={s.modalText}>
-                The step-by-step building guide isn't ready yet - check back soon!
-              </Text>
-              <View style={s.modalButtonsRow}>
-                <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onGotIt}>
-                  <Text style={s.modalConfirmTxt}>Got It</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
+          <Text style={s.modalTitle}>
+            {cloudSaveError ? 'Saved on This Device' : 'Saved!'}
+          </Text>
+          <Text style={s.modalText}>
+            {cloudSaveError
+              ? "We'll sync it online once you're connected again. Want to build this bracelet now?"
+              : 'Want to build this bracelet now?'}
+          </Text>
+          <View style={s.modalButtonsRow}>
+            <TouchableOpacity style={s.modalCancelBtn} onPress={onNotNow}>
+              <Text style={s.modalCancelTxt}>Not Now</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onBuildIt}>
+              <Text style={s.modalConfirmTxt}>Yes, Build It!</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </Modal>
@@ -227,7 +216,12 @@ export function SavedModal({
 
 function makeStyles(theme: Theme) {
   return StyleSheet.create({
-    modalOverlay:    { flex: 1, backgroundColor: theme.overlay, alignItems: 'center', justifyContent: 'center', padding: 20 },
+    // See MyDesignsScreen.tsx's modalOverlay comment - React Native's
+    // <Modal> doesn't establish its own stacking context, so without an
+    // explicit zIndex here, page content elsewhere (which all get an
+    // implicit zIndex:0 from react-native-web) can paint and hit-test
+    // above these modals instead of the other way around.
+    modalOverlay:    { flex: 1, backgroundColor: theme.overlay, alignItems: 'center', justifyContent: 'center', padding: 20, position: 'relative', zIndex: 1000 },
     modalCard:       { backgroundColor: theme.surface, borderRadius: 14, padding: 24, maxWidth: 360, width: '100%', gap: 10 },
     modalTitle:      { fontSize: 18, fontWeight: '700', color: theme.text },
     modalText:       { fontSize: 13, color: theme.textSubtle, lineHeight: 19, marginBottom: 8 },

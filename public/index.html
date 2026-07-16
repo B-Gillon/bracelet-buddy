@@ -10,6 +10,19 @@
     <meta name="theme-color" content="#7c3aed" />
     <title>Bracelet Buddy</title>
 
+    <!-- Always reserve the vertical scrollbar's track, whether or not the
+         current page is actually tall enough to need it. Without this, the
+         page width differs by the scrollbar's width (~15-17px) between a
+         short page (no scrollbar) and a tall one (scrollbar present),
+         which visibly nudges GlobalHeader's right-aligned nav/avatar
+         sideways on every navigation that crosses that threshold. -->
+    <style>
+      html {
+        scrollbar-gutter: stable;
+        overflow-y: scroll;
+      }
+    </style>
+
     <!-- PWA manifest - see public/manifest.json -->
     <link rel="manifest" href="/manifest.json" />
 

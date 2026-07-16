@@ -14,6 +14,12 @@ export interface BuildEditorContextValue {
   selectedColorIdx: number;
   setSelectedColorIdx: (idx: number) => void;
   onOpenColorPicker: () => void;
+  // Assigns a color directly to one palette slot (used for an empty/unset
+  // swatch in the Colors card - clicking it opens a native color picker
+  // rather than requiring the full "Change Colors" flow for a single
+  // slot). Also makes that slot the active paint color, same as clicking
+  // an already-filled swatch does.
+  onSetPaletteColor: (idx: number, color: string) => void;
 
   // Exactly one of these three tools is active at all times - Select Tool
   // (click/drag individual diamonds into a selection, same gesture as

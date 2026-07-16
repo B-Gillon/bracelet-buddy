@@ -39,9 +39,16 @@ export default function ColorsCard() {
   const s = useMemo(() => makeStyles(theme), [theme]);
   const {
     palette, colorCount, selectedColorIdx, setSelectedColorIdx, onOpenColorPicker,
+    onSetPaletteColor,
     toolMode, onColorTool, onEraseTool,
     onReplaceColors,
   } = useBuildEditor();
+
+  // Hidden native color inputs, one per palette slot - clicking an EMPTY
+  // swatch opens its own input directly (same technique ColorPickerScreen
+  // uses), rather than requiring the full "Change Colors" modal just to
+  // fill in one slot.
+  const colorInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Local UI-only state for the replace-rule list - rules aren't committed
   // to the pattern until Apply All is pressed. Each rule just remembers
@@ -145,18 +152,55 @@ export default function ColorsCard() {
 
       <View style={s.colorsRow}>
         {palette.slice(0, colorCount).map((c, i) => (
-          <TouchableOpacity
-            key={i}
-            style={[
-              s.circleBtn,
-              {
-                backgroundColor: c ?? theme.border,
-                borderWidth:     selectedColorIdx === i ? 3 : 1.5,
-                borderColor:     selectedColorIdx === i ? theme.purple : (c ?? theme.swatchBorder),
-              },
-            ]}
-            onPress={() => { onColorTool(); if (c) setSelectedColorIdx(i); }}
-          />
+          <View key={i} style={s.swatchWrapper}>
+            {/* Web-only, invisible - same hidden-input trick
+                ColorPickerScreen uses. Every slot gets one (not just empty
+                ones) so an empty slot can open straight to a picker on
+                click, same gesture as everything else here. */}
+            <input
+              type="color"
+              ref={el => { colorInputRefs.current[i] = el; }}
+              value={c ?? '#ffffff'}
+              style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
+              onChange={e => onSetPaletteColor(i, e.target.value)}
+            />
+            <TouchableOpacity
+              style={[
+                s.circleBtn,
+                {
+                  backgroundColor: c ?? theme.border,
+                  // Always a neutral, fixed-contrast border regardless of
+                  // the swatch's own fill - a dark swatch used to get a
+                  // border that matched its own (dark) color, making it
+                  // nearly disappear against the card's dark background.
+                  borderWidth: 1.5,
+                  borderColor: theme.swatchBorder,
+                },
+                selectedColorIdx === i && s.circleBtnSelected,
+              ]}
+              onPress={() => {
+                onColorTool();
+                if (c) {
+                  setSelectedColorIdx(i);
+                } else {
+                  // Empty slot - open its color picker directly instead of
+                  // (previously) doing nothing.
+                  colorInputRefs.current[i]?.click();
+                }
+              }}
+            >
+              {selectedColorIdx === i && (
+                // Fixed white ring + dark halo (via shadow) rather than a
+                // theme-purple ring - a purple ring on a purple swatch was
+                // nearly invisible. The checkmark sits on its own small
+                // white badge for the same reason: legible no matter what
+                // color it's sitting on top of.
+                <View style={s.selectedBadge}>
+                  <Text style={s.selectedBadgeTxt}>✓</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         ))}
         <TouchableOpacity style={s.toolbarBtn} onPress={() => { onColorTool(); onOpenColorPicker(); }}>
           <Text style={s.toolbarBtnTxt}>Change Colors</Text>
@@ -235,7 +279,44 @@ function makeStyles(theme: Theme) {
     toolBtnGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     separator: { height: 1, backgroundColor: theme.border, marginHorizontal: 4 },
     colorsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
-    circleBtn: { width: 28, height: 28, borderRadius: 14 },
+    // Relative so the selected-badge (absolute) can hang off the swatch's
+    // own corner without affecting layout of its neighbors.
+    swatchWrapper: { position: 'relative' },
+    circleBtn: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+    // Fixed white ring + dark halo - deliberately NOT theme.purple, since a
+    // purple ring around a purple (or otherwise similar) swatch was nearly
+    // invisible. This reads the same regardless of the swatch's own color
+    // or the current light/dark theme.
+    circleBtnSelected: {
+      borderWidth: 3,
+      borderColor: '#ffffff',
+      shadowColor: '#000000',
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0.45,
+      shadowRadius: 3,
+      elevation: 4,
+    },
+    // Small checkmark badge on its own white backdrop, hanging off the
+    // swatch's bottom-right corner - legible on top of any swatch color.
+    selectedBadge: {
+      position: 'absolute',
+      bottom: -4,
+      right: -4,
+      width: 14,
+      height: 14,
+      borderRadius: 7,
+      backgroundColor: '#ffffff',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: theme.border,
+      shadowColor: '#000000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.3,
+      shadowRadius: 2,
+      elevation: 3,
+    },
+    selectedBadgeTxt: { fontSize: 9, fontWeight: '700', color: theme.purple, lineHeight: 10 },
     replaceSection: { gap: 6 },
     replaceSectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1, color: theme.textFaint },
     replaceRow:     { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },

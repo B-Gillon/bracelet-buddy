@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, StyleSheet } from 'react-native';
 import GlobalHeader, { AppPage } from './components/GlobalHeader';
 import HomeScreen from './screens/HomeScreen';
@@ -10,12 +10,14 @@ import DesignCenterScreen from './screens/DesignCenterScreen';
 import NewPatternScreen from './screens/NewPatternScreen';
 import ColorPickerScreen from './screens/ColorPickerScreen';
 import BuildScreen from './screens/BuildScreen';
-import { PatternConfig } from './types/pattern';
+import BuildCenterScreen, { BuildTarget } from './screens/BuildCenterScreen';
+import { PatternConfig, DualGrid } from './types/pattern';
 import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from './utils/storage';
 import { loadPattern } from './utils/patterns';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ProfileProvider } from './context/ProfileContext';
-import { ThemeProvider } from './context/ThemeContext';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { Theme } from './constants/theme';
 
 type Screen =
   | 'home'
@@ -24,6 +26,7 @@ type Screen =
   | 'tutorials'
   | 'settings'
   | 'design-center'
+  | 'build-center'
   | 'new-pattern'
   | 'color-picker'
   | 'build';
@@ -38,7 +41,7 @@ function isRestorableScreen(screen: Screen): screen is RestorableScreen {
 
 const ALL_SCREENS: Screen[] = [
   'home', 'patterns', 'my-designs', 'tutorials', 'settings',
-  'design-center', 'new-pattern', 'color-picker', 'build',
+  'design-center', 'build-center', 'new-pattern', 'color-picker', 'build',
 ];
 
 // Web-only: the current screen is mirrored into a `?screen=` query param so
@@ -73,6 +76,7 @@ function activeNavForScreen(screen: Screen): AppPage {
     case 'my-designs':  return 'my-designs';
     case 'tutorials':   return 'tutorials';
     case 'settings':    return 'settings';
+    case 'build-center':  return 'build-center';
     case 'design-center':
     case 'new-pattern':
     case 'color-picker':
@@ -82,13 +86,17 @@ function activeNavForScreen(screen: Screen): AppPage {
   }
 }
 
-// Wraps the whole app in AuthProvider. Kept as a separate outer component
-// so AppInner (and everything below it) can freely call useAuth().
+// Wraps the whole app in AuthProvider/ThemeProvider. Kept as a separate
+// outer component so AppInner (and everything below it) can freely call
+// useAuth()/useTheme() - ThemeProvider used to only wrap BuildScreen, but
+// Dark Mode is app-wide now, so every screen needs access.
 export default function App() {
   return (
     <AuthProvider>
       <ProfileProvider>
-        <AppInner />
+        <ThemeProvider>
+          <AppInner />
+        </ThemeProvider>
       </ProfileProvider>
     </AuthProvider>
   );
@@ -98,7 +106,14 @@ function AppInner() {
   const [screen, setScreen]         = useState<Screen>('home');
   const [config, setConfig]         = useState<PatternConfig | null>(null);
   const [restored, setRestored]     = useState(false);
+  // null = Build Center's picker mode (choose from My Designs). Set when
+  // either a picker card is selected (clientId only, screen fetches the
+  // rest) or "Yes, Build It!" hands over a pattern it already has fully
+  // loaded (config + dualGrid, no fetch needed).
+  const [buildTarget, setBuildTarget] = useState<BuildTarget | null>(null);
   const { user } = useAuth();
+  const { theme } = useTheme();
+  const s = useMemo(() => makeStyles(theme), [theme]);
 
   // On first load, figure out which screen to show. The URL's ?screen=
   // param is authoritative if present (a real refresh of whatever page you
@@ -153,7 +168,38 @@ function AppInner() {
   }, [screen, config, restored]);
 
   function handleNavigate(page: AppPage) {
+    // Clicking the header's Build Center link directly always lands on the
+    // picker, even if a specific pattern was being built before - only
+    // "Yes, Build It!" and a picker selection should ever set a target.
+    if (page === 'build-center') setBuildTarget(null);
     setScreen(page);
+  }
+
+  // Handed the config/dualGrid BuildScreen already has in memory right
+  // after a successful Save, so Build Center can show exactly what was
+  // just saved without a network round-trip (and without risking a stale
+  // read in the offline "will sync later" case).
+  function handleBuildPattern(builtConfig: PatternConfig, dualGrid: DualGrid) {
+    setBuildTarget({ clientId: builtConfig.id, config: builtConfig, dualGrid });
+    setScreen('build-center');
+  }
+
+  // A picker card only has a clientId - Build Center itself fetches the
+  // rest via loadPattern.
+  function handleSelectBuildTarget(clientId: string) {
+    setBuildTarget({ clientId });
+  }
+
+  function handleChooseDifferentPattern() {
+    setBuildTarget(null);
+  }
+
+  // "Build It Now" from My Designs' preview modal - same idea as a picker
+  // selection (clientId only, Build Center fetches the rest), just reached
+  // from a different screen, so this also has to switch screen itself.
+  function handleBuildFromMyDesigns(clientId: string) {
+    setBuildTarget({ clientId });
+    setScreen('build-center');
   }
 
   function handleStartFromScratch() {
@@ -229,14 +275,13 @@ function AppInner() {
     return (
       <View style={{ width: '100%' }}>
         {header}
-        <ThemeProvider>
-          <BuildScreen
-            config={config}
-            onConfigChange={handleConfigChange}
-            onExit={handleExit}
-            onRequireAccount={() => setScreen('home')}
-          />
-        </ThemeProvider>
+        <BuildScreen
+          config={config}
+          onConfigChange={handleConfigChange}
+          onExit={handleExit}
+          onRequireAccount={() => setScreen('home')}
+          onBuildPattern={handleBuildPattern}
+        />
       </View>
     );
   }
@@ -247,11 +292,20 @@ function AppInner() {
       <View style={s.body}>
         {screen === 'home' && <HomeScreen onGoToProfile={() => setScreen('settings')} />}
         {screen === 'patterns' && <PatternsScreen />}
-        {screen === 'my-designs' && <MyDesignsScreen onOpenPattern={handleOpenPattern} />}
+        {screen === 'my-designs' && (
+          <MyDesignsScreen onOpenPattern={handleOpenPattern} onBuildPattern={handleBuildFromMyDesigns} />
+        )}
         {screen === 'tutorials' && <TutorialsScreen />}
         {screen === 'settings' && <SettingsScreen />}
         {screen === 'design-center' && (
           <DesignCenterScreen onStartFromScratch={handleStartFromScratch} />
+        )}
+        {screen === 'build-center' && (
+          <BuildCenterScreen
+            target={buildTarget}
+            onSelectPattern={handleSelectBuildTarget}
+            onChoosePattern={handleChooseDifferentPattern}
+          />
         )}
         {screen === 'new-pattern' && (
           <NewPatternScreen onNext={handleNext} />
@@ -269,7 +323,9 @@ function AppInner() {
   );
 }
 
-const s = StyleSheet.create({
-  app:  { flex: 1, backgroundColor: '#fff' },
-  body: { flex: 1 },
-});
+function makeStyles(theme: Theme) {
+  return StyleSheet.create({
+    app:  { flex: 1, backgroundColor: theme.background },
+    body: { flex: 1 },
+  });
+}

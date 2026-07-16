@@ -3,9 +3,8 @@ import { View } from 'react-native';
 import Svg, { Polygon } from 'react-native-svg';
 import { DualGrid } from '../types/pattern';
 import { CellInfo, buildCells } from '../utils/diamondGrid';
-
-const EMPTY_FILL = '#f0efeb';
-const STROKE     = '#525252';
+import { instructionRowIndexForCell } from '../utils/knotInstructions';
+import { useTheme } from '../context/ThemeContext';
 
 // Same two-pass rendering BuildScreen uses (background diamonds, then
 // colored ones on top) at a fixed small internal scale - the viewBox lets
@@ -17,6 +16,7 @@ export default function PatternThumbnail({
   diamondSize = 15,
   maxCols,
   fitWidth,
+  dimmedInstructionRows,
 }: {
   dualGrid: DualGrid;
   // Every diamond renders at exactly this pixel size, regardless of the
@@ -35,7 +35,17 @@ export default function PatternThumbnail({
   // full-pattern preview that must never need horizontal scrolling,
   // regardless of how long the bracelet actually is.
   fitWidth?: number;
+  // Build Center's mini preview - diamonds belonging to any instructional
+  // row index in this set render dimmed, so the preview visibly "fills in
+  // as grey" following build progress. Uses the exact same row mapping
+  // (instructionRowIndexForCell) the instruction view itself is built
+  // from, so the two never disagree about which diamonds a row covers.
+  dimmedInstructionRows?: Set<number>;
 }) {
+  const { theme } = useTheme();
+  const EMPTY_FILL = theme.gridEmptyFill;
+  const STROKE     = theme.gridStroke;
+
   const fullMainRows = dualGrid.main.length;
   const fullMainCols = fullMainRows > 0 ? dualGrid.main[0].length : 0;
   if (fullMainRows === 0 || fullMainCols === 0) return null;
@@ -84,6 +94,9 @@ export default function PatternThumbnail({
         {cells.map(cell => {
           const color = getCellColor(cell);
           if (!color) return null;
+          const isDimmed = !!dimmedInstructionRows?.has(
+            instructionRowIndexForCell(cell.pass, cell.gc, fullMainCols)
+          );
           return (
             <Polygon
               key={'fg-' + cell.key}
@@ -91,6 +104,7 @@ export default function PatternThumbnail({
               fill={color}
               stroke={STROKE}
               strokeWidth={0.75}
+              opacity={isDimmed ? 0.25 : 1}
             />
           );
         })}
