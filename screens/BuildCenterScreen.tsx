@@ -326,28 +326,44 @@ export default function BuildCenterScreen({
                 <View style={[s.splitView, stackPanels && s.splitViewStacked]}>
                   <View style={s.splitPane}>
                     <Text style={s.splitPaneLabel}>Your guesses (tap a line to color it)</Text>
-                    <ScrollView horizontal>
+                    {stackPanels ? (
                       <TraceableInstructionView
                         dualGrid={detailGrid}
                         guesses={traceGuesses}
                         onSetGuess={handleSetTraceGuess}
                         palette={tracePalette}
+                        fitWidth={windowWidth - 80}
                       />
-                    </ScrollView>
+                    ) : (
+                      <ScrollView horizontal>
+                        <TraceableInstructionView
+                          dualGrid={detailGrid}
+                          guesses={traceGuesses}
+                          onSetGuess={handleSetTraceGuess}
+                          palette={tracePalette}
+                        />
+                      </ScrollView>
+                    )}
                   </View>
-                  <View style={s.splitPane}>
-                    <Text style={s.splitPaneLabel}>The real computed answer</Text>
-                    <ScrollView horizontal>
-                      <BuildInstructionView
-                        dualGrid={detailGrid}
-                        rowTechniques={rowTechniques}
-                        buildProgress={[]}
-                        onMarkRowDone={() => {}}
-                        onUndoRowDone={() => {}}
-                        hideHeader
-                      />
-                    </ScrollView>
-                  </View>
+                  {/* The real computed answer is desktop-only - on a phone-
+                      width screen, showing two panels (even stacked) meant
+                      constant scrolling just to compare them; here, only
+                      the editable side is worth showing at all. */}
+                  {!stackPanels && (
+                    <View style={s.splitPane}>
+                      <Text style={s.splitPaneLabel}>The real computed answer</Text>
+                      <ScrollView horizontal>
+                        <BuildInstructionView
+                          dualGrid={detailGrid}
+                          rowTechniques={rowTechniques}
+                          buildProgress={[]}
+                          onMarkRowDone={() => {}}
+                          onUndoRowDone={() => {}}
+                          hideHeader
+                        />
+                      </ScrollView>
+                    </View>
+                  )}
                 </View>
               </>
             )}
@@ -490,7 +506,7 @@ function makeStyles(theme: Theme) {
 
     splitView: { flexDirection: 'row', gap: 16, width: '100%' },
     splitViewStacked: { flexDirection: 'column', gap: 24 },
-    splitPane: { flex: 1, minWidth: 0 },
+    splitPane: { flex: 1, minWidth: 0, alignItems: 'center' },
     splitPaneLabel: { fontSize: 12, fontWeight: '700', color: theme.textMuted, marginBottom: 8, textAlign: 'center' },
 
     tracePuzzleSharedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 },

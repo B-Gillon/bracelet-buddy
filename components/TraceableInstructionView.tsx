@@ -55,6 +55,7 @@ export default function TraceableInstructionView({
   guesses,
   onSetGuess,
   palette,
+  fitWidth,
 }: {
   dualGrid: DualGrid;
   // Keyed by patternValidity.ts's edgeKey for real knot-to-knot lines, or
@@ -62,6 +63,12 @@ export default function TraceableInstructionView({
   guesses: Record<string, string>;
   onSetGuess: (key: string, color: string | null) => void;
   palette: string[];
+  // When set, the whole diagram is scaled DOWN (never up) to fit exactly
+  // within this width, with no horizontal scrolling needed - used on
+  // narrow/mobile screens where scrolling a wide diagram sideways proved
+  // hard to use. Omit this prop to get the normal full-size, scrollable
+  // rendering (desktop side-by-side view).
+  fitWidth?: number;
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
@@ -149,62 +156,74 @@ export default function TraceableInstructionView({
     return out.filter(m => (seen.has(m.key) ? false : (seen.add(m.key), true)));
   }, [rows]);
 
+  const scale = fitWidth ? Math.min(1, fitWidth / diagramWidth) : 1;
+
   return (
     <View style={s.outer}>
-      <View style={{ width: diagramWidth, height: totalHeight }}>
-        <Svg width={diagramWidth} height={totalHeight} style={StyleSheet.absoluteFill}>
-          {curves.map(line => {
-            const color = guesses[line.guessKey];
-            return (
-              <Path
-                key={line.key}
-                d={line.d}
-                stroke={color ?? UNGUESSED_COLOR}
-                strokeWidth={color ? 5 : 3}
-                strokeDasharray={color ? undefined : '7,6'}
-                fill="none"
-                strokeLinecap="round"
-              />
-            );
-          })}
-        </Svg>
+      <View
+        style={{
+          width: diagramWidth * scale,
+          height: totalHeight * scale,
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+        }}
+      >
+        <View style={{ width: diagramWidth, height: totalHeight, transform: [{ scale }] }}>
+          <Svg width={diagramWidth} height={totalHeight} style={StyleSheet.absoluteFill}>
+            {curves.map(line => {
+              const color = guesses[line.guessKey];
+              return (
+                <Path
+                  key={line.key}
+                  d={line.d}
+                  stroke={color ?? UNGUESSED_COLOR}
+                  strokeWidth={color ? 5 : 3}
+                  strokeDasharray={color ? undefined : '7,6'}
+                  fill="none"
+                  strokeLinecap="round"
+                />
+              );
+            })}
+          </Svg>
 
-        {markers.map(marker => {
-          const color = guesses[marker.guessKey];
-          return (
-            <TouchableOpacity
-              key={marker.key}
-              onPress={() => onSetGuess(marker.guessKey, cycle(color))}
-              style={[
-                s.marker,
-                {
-                  left: marker.x - MARKER_SIZE / 2,
-                  top: marker.y - MARKER_SIZE / 2,
-                  backgroundColor: color ?? theme.surfaceMuted,
-                  borderColor: color ? '#ffffff' : theme.border,
-                },
-              ]}
-            />
-          );
-        })}
-
-        {rows.map((row, i) => {
-          const y = TOP_PAD + i * ROW_HEIGHT + ROW_HEIGHT / 2;
-          return row.knots.map(knot => {
-            if (!knot.isKnot) return null; // idle positions are represented by their marker above, not a separate dot
-            const x = knotX(row.pass, knot.displayPos);
+          {markers.map(marker => {
+            const color = guesses[marker.guessKey];
             return (
-              <View
-                key={knot.key}
-                pointerEvents="none"
+              <TouchableOpacity
+                key={marker.key}
+                onPress={() => onSetGuess(marker.guessKey, cycle(color))}
                 style={[
-                  s.knot,
-                  { left: x - KNOT_SIZE / 2, top: y - KNOT_SIZE / 2, backgroundColor: knot.color ?? theme.border },
+                  s.marker,
+                  {
+                    left: marker.x - MARKER_SIZE / 2,
+                    top: marker.y - MARKER_SIZE / 2,
+                    backgroundColor: color ?? theme.surfaceMuted,
+                    borderColor: color ? '#ffffff' : theme.border,
+                  },
                 ]}
               />
             );
-          });
-        })}
+          })}
+
+          {rows.map((row, i) => {
+            const y = TOP_PAD + i * ROW_HEIGHT + ROW_HEIGHT / 2;
+            return row.knots.map(knot => {
+              if (!knot.isKnot) return null; // idle positions are represented by their marker above, not a separate dot
+              const x = knotX(row.pass, knot.displayPos);
+              return (
+                <View
+                  key={knot.key}
+                  pointerEvents="none"
+                  style={[
+                    s.knot,
+                    { left: x - KNOT_SIZE / 2, top: y - KNOT_SIZE / 2, backgroundColor: knot.color ?? theme.border },
+                  ]}
+                />
+              );
+            });
+          })}
+        </View>
       </View>
     </View>
   );
