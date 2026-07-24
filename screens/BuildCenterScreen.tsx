@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Theme } from '../constants/theme';
@@ -57,6 +57,13 @@ export default function BuildCenterScreen({
   const { user, loading: authLoading } = useAuth();
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
+
+  // Below this width, the split view stacks the two panels vertically
+  // instead of side-by-side - two horizontal-scrolling panels each
+  // fighting over half a phone screen was unusable (each panel needs its
+  // own full width to scroll a wide diagram properly).
+  const { width: windowWidth } = useWindowDimensions();
+  const stackPanels = windowWidth < 900;
 
   // Picker-mode list state - only patterns that have actually been opened
   // in Build Center before (see markBuildStarted below), not every saved
@@ -316,7 +323,7 @@ export default function BuildCenterScreen({
                     ))}
                   </View>
                 </View>
-                <View style={s.splitView}>
+                <View style={[s.splitView, stackPanels && s.splitViewStacked]}>
                   <View style={s.splitPane}>
                     <Text style={s.splitPaneLabel}>Your guesses (tap a line to color it)</Text>
                     <ScrollView horizontal>
@@ -482,6 +489,7 @@ function makeStyles(theme: Theme) {
     tracePuzzleToggleTxt: { fontSize: 13, fontWeight: '700', color: theme.text },
 
     splitView: { flexDirection: 'row', gap: 16, width: '100%' },
+    splitViewStacked: { flexDirection: 'column', gap: 24 },
     splitPane: { flex: 1, minWidth: 0 },
     splitPaneLabel: { fontSize: 12, fontWeight: '700', color: theme.textMuted, marginBottom: 8, textAlign: 'center' },
 
