@@ -1,11 +1,11 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Animated, View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import Svg, { Path, Polygon } from 'react-native-svg';
 import { Theme } from '../constants/theme';
 import { useTheme } from '../context/ThemeContext';
 import { DualGrid, RowTechnique, RowTechniques, BuildProgress } from '../types/pattern';
 import { buildInstructionRows, candidatePositions, InstructionKnot } from '../utils/knotInstructions';
-import { resolveHiddenColors } from '../utils/patternValidity';
+import { resolveHiddenColorsExhaustive, edgeKey, computeContrastBorderColor } from '../utils/patternValidity';
 
 // The Build Center detail page's main instructional view - ONE continuous
 // diagram for the whole pattern, matching how a real reference pattern
@@ -70,6 +70,7 @@ export default function BuildInstructionView({
   buildProgress,
   onMarkRowDone,
   onUndoRowDone,
+  hideHeader,
 }: {
   dualGrid: DualGrid;
   rowTechniques: RowTechniques;
@@ -81,6 +82,12 @@ export default function BuildInstructionView({
   // technique still drives arrow direction, just always via its computed
   // default now that the manual override button is gone.
   onSetRowTechnique?: (rowIndex: number, technique: RowTechnique | null) => void;
+  // Suppresses the tally/legend text above the diagram - used when this
+  // component sits side-by-side with another diagram that doesn't have
+  // that header (the Practice Tracing split view), so both diagrams'
+  // Row 1 lines up at the same vertical position instead of one being
+  // pushed down by header text the other doesn't have.
+  hideHeader?: boolean;
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
@@ -90,13 +97,12 @@ export default function BuildInstructionView({
     [dualGrid, rowTechniques]
   );
 
-  // TEMPORARY - for verifying patternValidity.ts against a real pattern
-  // before trusting it, per PATTERN-VALIDITY-PLAN.md section 7's own
-  // warning that code review alone isn't enough. Remove once verified.
-  useMemo(() => {
-    const result = resolveHiddenColors(rows);
-    console.log('PATTERN VALIDITY DEBUG:', JSON.stringify(result));
-  }, [rows]);
+  // Real, provable hidden colors (dot-anchored propagation - see
+  // patternValidity.ts and PATTERN-VALIDITY-PLAN.md). Used below to
+  // upgrade a line from the dashed "unconfirmed" fallback to its actual
+  // solid color wherever that's now provable, without ever asserting a
+  // color that isn't backed by a hard fact.
+  const validity = useMemo(() => resolveHiddenColorsExhaustive(rows), [rows]);
 
   const doneSet = useMemo(() => new Set(buildProgress), [buildProgress]);
 
@@ -138,6 +144,42 @@ export default function BuildInstructionView({
     return order.map(color => ({ color, count: counts.get(color)! }));
   }, [rows]);
 
+  // Every knot involved in a real, provable contradiction (see
+  // patternValidity.ts) - same "flash + non-palette border, together" rule
+  // used on the paint canvas (PATTERN-VALIDITY-PLAN.md section 4), just
+  // adapted to this diagram's knot circles instead of diamonds.
+  const invalidKnotKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const c of validity.contradictions) {
+      keys.add(`${c.row}:${c.position}`);
+      if (c.neighborRow != null && c.neighborPosition != null) {
+        keys.add(`${c.neighborRow}:${c.neighborPosition}`);
+      }
+    }
+    return keys;
+  }, [validity]);
+
+  const invalidBorderColor = useMemo(
+    () => computeContrastBorderColor(colorTally.map(c => c.color)),
+    [colorTally]
+  );
+
+  // Same shared-animated-value approach as PatternGridView, so every
+  // flagged knot pulses in lockstep rather than out of phase with itself.
+  const flashAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (invalidKnotKeys.size === 0) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(flashAnim, { toValue: 1, duration: 650, useNativeDriver: false }),
+        Animated.timing(flashAnim, { toValue: 0, duration: 650, useNativeDriver: false }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [invalidKnotKeys, flashAnim]);
+  const flashOpacity = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
+
   const totalStartingStrings = useMemo(
     () => colorTally.reduce((sum, c) => sum + c.count, 0),
     [colorTally]
@@ -145,25 +187,15 @@ export default function BuildInstructionView({
 
   // Every connecting segment. A real knot always ties exactly 2 strings
   // in and 2 out, so it always draws a line to EVERY one of its geometric
-  // candidates (see candidatePositions) - never fewer, regardless of
-  // whether the color is confirmed. A dot has just one real connection
-  // (see knotInstructions.ts's SEPARATE MAIN/GAP ROWS note) and always
-  // draws in its own definite color, whichever end of the segment it's
-  // on - that's never in question. For a real knot on both ends, the
-  // color IS confirmed (drawn solid, in that real color) exactly when the
-  // target's own displayed color matches the source's; when it doesn't,
-  // a string still definitely connects them (the physical tie has no
-  // "missing" strand), but which of the knot's two colors it actually
-  // carries can't be derived from the painted grid alone - see the WHY
-  // THERE'S NO "SECOND STRING PER KNOT" note in knotInstructions.ts for
-  // why guessing that color was tried twice and reverted both times after
-  // a live conservation check caught it disagreeing with itself. Rather
-  // than either omit that connection (physically wrong - a real knot
-  // can't have a missing strand) or invent a color for it (proven
-  // unreliable), it's drawn as an honest "a string connects here, exact
-  // color unconfirmed" segment - a thin dashed gray line - so the diagram
-  // never shows fewer than 2 lines per real knot, and never asserts a
-  // color it can't back up.
+  // candidates (see candidatePositions) - never fewer. The color for each
+  // specific line comes DIRECTLY from validity.edges (patternValidity.ts's
+  // authoritative per-line answer, including its own/darkest tie-break
+  // rules) rather than being re-derived here - re-deriving it locally
+  // used to disagree with what that file actually proved, which is
+  // exactly why lines stayed dashed even after every knot was fully
+  // resolved. A line missing from validity.edges is genuinely unresolved
+  // (shouldn't happen once the pattern is fully valid) and falls back to
+  // the honest "unconfirmed" dashed rendering.
   const lines = useMemo(() => {
     const segs: { key: string; d: string; color: string; confirmed: boolean; done: boolean }[] = [];
     for (let i = 0; i < rows.length - 1; i++) {
@@ -179,21 +211,9 @@ export default function BuildInstructionView({
         for (const targetPos of candidates) {
           const target = nextRow.knots[targetPos];
           const targetX = knotX(nextRow.pass, targetPos);
-          let color: string;
-          let confirmed: boolean;
-          if (!target.isKnot) {
-            color = target.color ?? knot.color;
-            confirmed = true;
-          } else if (!knot.isKnot) {
-            color = knot.color;
-            confirmed = true;
-          } else if (target.color === knot.color) {
-            color = knot.color;
-            confirmed = true;
-          } else {
-            color = UNCONFIRMED_COLOR;
-            confirmed = false;
-          }
+          const resolvedColor = validity.edges[edgeKey(i, knot.displayPos, targetPos)];
+          const color = resolvedColor ?? UNCONFIRMED_COLOR;
+          const confirmed = resolvedColor != null;
           segs.push({
             key: `${knot.key}->${target.key}`,
             // A smooth S-curve (vertical in/out, bowing between) rather
@@ -207,7 +227,7 @@ export default function BuildInstructionView({
       }
     }
     return segs;
-  }, [rows, doneSet]);
+  }, [rows, doneSet, validity]);
 
   // Arrow triangles for every real knot, drawn in their own SVG layer on
   // top of the knot circles - see the ARROW_POINTS comment above for why
@@ -228,7 +248,7 @@ export default function BuildInstructionView({
 
   return (
     <View style={s.outer}>
-      {colorTally.length > 0 && (
+      {!hideHeader && colorTally.length > 0 && (
         <View style={s.tallyRow}>
           <Text style={s.tallyLabel}>{totalStartingStrings} strings to start:</Text>
           {colorTally.map(({ color, count }) => (
@@ -239,10 +259,12 @@ export default function BuildInstructionView({
           ))}
         </View>
       )}
-      <View style={s.legendRow}>
-        <View style={s.legendDash} />
-        <Text style={s.legendTxt}>dashed = a second string ties in here too, exact color not shown</Text>
-      </View>
+      {!hideHeader && (
+        <View style={s.legendRow}>
+          <View style={s.legendDash} />
+          <Text style={s.legendTxt}>dashed = a second string ties in here too, exact color not shown</Text>
+        </View>
+      )}
 
       <View style={s.container}>
         <View style={[s.marginCol, { height: totalHeight }]}>
@@ -327,19 +349,35 @@ export default function BuildInstructionView({
                     />
                   );
                 }
+                const isInvalid = knot.isKnot && invalidKnotKeys.has(`${i}:${knot.displayPos}`);
                 return (
-                  <View
-                    key={knot.key}
-                    style={[
-                      s.knot,
-                      {
-                        left: x - KNOT_SIZE / 2,
-                        top: y - KNOT_SIZE / 2,
-                        backgroundColor: knot.color ?? theme.border,
-                        opacity: isDone ? 0.3 : 1,
-                      },
-                    ]}
-                  />
+                  <React.Fragment key={knot.key}>
+                    <View
+                      style={[
+                        s.knot,
+                        {
+                          left: x - KNOT_SIZE / 2,
+                          top: y - KNOT_SIZE / 2,
+                          backgroundColor: knot.color ?? theme.border,
+                          opacity: isDone ? 0.3 : 1,
+                        },
+                      ]}
+                    />
+                    {isInvalid && (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          s.knotInvalidBorder,
+                          {
+                            left: x - KNOT_SIZE / 2 - 3,
+                            top: y - KNOT_SIZE / 2 - 3,
+                            borderColor: invalidBorderColor,
+                            opacity: flashOpacity,
+                          },
+                        ]}
+                      />
+                    )}
+                  </React.Fragment>
                 );
               });
             })}
@@ -449,6 +487,13 @@ function makeStyles(theme: Theme) {
       shadowOpacity: 0.5,
       shadowRadius: 3,
       elevation: 4,
+    },
+    knotInvalidBorder: {
+      position: 'absolute',
+      width: KNOT_SIZE + 6,
+      height: KNOT_SIZE + 6,
+      borderRadius: (KNOT_SIZE + 6) / 2,
+      borderWidth: 3,
     },
     connectorDot: {
       position: 'absolute',

@@ -18,6 +18,7 @@ import { useTheme } from '../context/ThemeContext';
 import { Theme } from '../constants/theme';
 import { BuildEditorContext, BuildEditorContextValue } from '../context/BuildEditorContext';
 import PatternGridView, { FloatingCell } from '../components/PatternGridView';
+import BuildInstructionView from '../components/BuildInstructionView';
 import GridEdgeControls from '../components/GridEdgeControls';
 import BuildScreenHeader from '../components/BuildScreenHeader';
 import {
@@ -28,6 +29,7 @@ import {
   SavedModal,
   CheckPatternModal,
 } from '../components/BuildScreenModals';
+import { computePatternValidity, PatternValidityResult } from '../utils/patternValidity';
 import { buildInstructionRows } from '../utils/knotInstructions';
 import { checkPatternFeasibility, FeasibilityResult } from '../utils/patternFeasibility';
 import ColorsCard from '../components/build-cards/ColorsCard';
@@ -77,6 +79,28 @@ export default function BuildScreen({
   const [showCheckPatternModal, setShowCheckPatternModal] = useState(false);
   const [checkPatternResult, setCheckPatternResult] = useState<FeasibilityResult | null>(null);
   const [isCheckingPattern, setIsCheckingPattern] = useState(false);
+
+  // Live invalid-diamond highlighting (PATTERN-VALIDITY-PLAN.md section 4) -
+  // debounced rather than tied directly to every dualGrid change, since the
+  // full check (patternValidity.ts's exhaustive resolver) can take real
+  // time and running it on every single paint stroke would make painting
+  // itself feel laggy. Updates a moment after you pause, not while you're
+  // actively clicking.
+  const [liveValidity, setLiveValidity] = useState<PatternValidityResult | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setLiveValidity(computePatternValidity(dualGrid));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [dualGrid]);
+
+  // Read-only "run through it like Build Center" preview - same diagram
+  // component Build Center itself uses, fed the CURRENT, possibly-unsaved
+  // dualGrid directly, so you can trace a flagged conflict visually
+  // without needing to save first. rowTechniques/buildProgress are just
+  // empty here (this is a diagram to look at, not a build-progress
+  // tracker) and the mark-done handlers are no-ops for the same reason.
+  const [showDiagramPreview, setShowDiagramPreview] = useState(false);
 
   // Load/save/name/delete concerns for this pattern - hydration, debounced
   // autosave, name-availability checks, and the Save/Save As New/Delete
@@ -919,6 +943,25 @@ export default function BuildScreen({
           {header}
 
           <View style={orientation === 'horizontal' ? s.bodyColumn : s.bodyRow}>
+            <TouchableOpacity
+              style={s.diagramToggleBtn}
+              onPress={() => setShowDiagramPreview(v => !v)}
+            >
+              <Text style={s.diagramToggleBtnTxt}>
+                {showDiagramPreview ? '← Back to Painting' : 'View as Build Diagram'}
+              </Text>
+            </TouchableOpacity>
+
+            {showDiagramPreview ? (
+              <BuildInstructionView
+                dualGrid={dualGrid}
+                rowTechniques={[]}
+                buildProgress={[]}
+                onMarkRowDone={() => {}}
+                onUndoRowDone={() => {}}
+              />
+            ) : (
+            <>
             <View style={s.gridArea} onLayout={e => setGridViewportWidth(e.nativeEvent.layout.width)}>
               <GridEdgeControls
                 axis="row"
@@ -958,6 +1001,8 @@ export default function BuildScreen({
                       floatingCells={floatingCellsForGrid}
                       boxSelectEnabled={toolMode === 'select' && !floatingOp}
                       onBoxSelect={handleBoxSelect}
+                      invalidCells={liveValidity?.invalidCells}
+                      invalidBorderColor={liveValidity?.invalidBorderColor}
                     />
                   </ScrollView>
                 </View>
@@ -983,6 +1028,8 @@ export default function BuildScreen({
             {orientation === 'horizontal'
               ? cardRow
               : (sidebarCollapsed ? collapsedSidebarToggle : sidebar)}
+            </>
+            )}
           </View>
         </ScrollView>
 
@@ -1063,6 +1110,11 @@ function makeStyles(theme: Theme) {
     cardRowOuter:       { flex: 1, backgroundColor: theme.panelBackground, paddingVertical: 18, paddingHorizontal: 24 },
     cardRow:            { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
     gridArea:           { flex: 1, alignItems: 'center', paddingVertical: 16, backgroundColor: theme.surface },
+    diagramToggleBtn:   {
+      alignSelf: 'flex-start', marginLeft: 16, marginTop: 8, marginBottom: 4,
+      paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: theme.purple,
+    },
+    diagramToggleBtnTxt: { fontSize: 12, fontWeight: '700', color: theme.textOnPurple },
     gridWithSideEdges:  { flexDirection: 'row', alignItems: 'center' },
     sidebar:            { width: 240, borderLeftWidth: 1, borderLeftColor: theme.border, paddingHorizontal: 16, paddingVertical: 16, gap: 14 },
     sidebarHeaderRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

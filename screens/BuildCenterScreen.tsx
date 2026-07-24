@@ -14,7 +14,9 @@ import {
 import { useBuildProgress } from '../hooks/useBuildProgress';
 import PatternThumbnail from '../components/PatternThumbnail';
 import BuildInstructionView from '../components/BuildInstructionView';
+import TraceableInstructionView from '../components/TraceableInstructionView';
 import { computePatternValidity } from '../utils/patternValidity';
+import { storageGet, storageSet, STORAGE_KEYS } from '../utils/storage';
 
 // Picker-mode card grid uses the same diamond-math-derived sizing as My
 // Designs, so cards in both places stay visually consistent.
@@ -102,6 +104,47 @@ export default function BuildCenterScreen({
   // perfectly consistent with each other.
   const validity = useMemo(() => (detailGrid ? computePatternValidity(detailGrid) : null), [detailGrid]);
 
+  // "Practice Tracing" split view (see chat) - a manual, unassisted twin
+  // of this same diagram where every line starts blank and you fill it in
+  // yourself, side by side with the real computed answer for comparison.
+  // Guesses persist locally per-pattern (utils/storage.ts, same mechanism
+  // buildProgress already uses) so leaving and coming back keeps your work.
+  const [showTracePuzzle, setShowTracePuzzle] = useState(false);
+  const [traceGuesses, setTraceGuesses] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!target?.clientId) return;
+    let cancelled = false;
+    (async () => {
+      const saved = await storageGet<Record<string, string>>(STORAGE_KEYS.tracePuzzle(target.clientId));
+      if (!cancelled) setTraceGuesses(saved ?? {});
+    })();
+    return () => { cancelled = true; };
+  }, [target?.clientId]);
+
+  function handleSetTraceGuess(key: string, color: string | null) {
+    setTraceGuesses(prev => {
+      const next = { ...prev };
+      if (color == null) delete next[key];
+      else next[key] = color;
+      if (target?.clientId) storageSet(STORAGE_KEYS.tracePuzzle(target.clientId), next);
+      return next;
+    });
+  }
+
+  // The pattern's own real starting colors (row 1 is always a full main
+  // row - see BuildInstructionView's colorTally note for why that's
+  // reliable). dualGrid.main is [widthIndex][lengthIndex] (confirmed
+  // directly against real data earlier in this conversation - NOT
+  // [row][col] in the row-1-first sense), so row 1's colors are
+  // main[r][0] for every width index r, not main[0].
+  const tracePalette = useMemo(() => {
+    if (!detailGrid) return [];
+    const widthCount = detailGrid.main.length;
+    const rowOne = Array.from({ length: widthCount }, (_, r) => detailGrid.main[r]?.[0] ?? null);
+    return Array.from(new Set(rowOne.filter((c): c is string => c != null)));
+  }, [detailGrid]);
+
   // Guards against losing progress on a real page close/refresh - only
   // fires while there's a genuine unsaved change sitting in the (brief)
   // debounce window or a failed save, not on every render.
@@ -187,7 +230,7 @@ export default function BuildCenterScreen({
   // Detail mode: a specific pattern was chosen (or just saved).
   if (target) {
     return (
-      <ScrollView contentContainerStyle={s.container}>
+      <ScrollView contentContainerStyle={[s.container, showTracePuzzle && s.containerWide]}>
         <View style={s.topRow}>
           <TouchableOpacity onPress={handleChoosePattern}>
             <Text style={s.backLink}>← Choose a Different Pattern</Text>
@@ -222,12 +265,13 @@ export default function BuildCenterScreen({
               />
             </View>
 
-            {validity && !validity.valid ? (
+            {validity && !validity.valid && !showTracePuzzle ? (
               <View style={s.blockedWrapper}>
                 <Text style={s.blockedTitle}>This Pattern Can't Be Opened Yet</Text>
                 <Text style={s.blockedText}>
                   This pattern can't be opened yet - it has a knotting conflict that needs to be
-                  fixed in Design Center first.
+                  fixed in Design Center first. You can still practice tracing it by hand below,
+                  though - that doesn't require it to be fully valid.
                 </Text>
                 <TouchableOpacity
                   style={s.blockedBtn}
@@ -236,7 +280,7 @@ export default function BuildCenterScreen({
                   <Text style={s.blockedBtnTxt}>Fix in Design Center</Text>
                 </TouchableOpacity>
               </View>
-            ) : (
+            ) : !showTracePuzzle ? (
               <BuildInstructionView
                 dualGrid={detailGrid}
                 rowTechniques={rowTechniques}
@@ -245,6 +289,71 @@ export default function BuildCenterScreen({
                 onUndoRowDone={undoRowDone}
                 onSetRowTechnique={setRowTechnique}
               />
+            ) : null}
+
+            {/* Practice Tracing toggle - deliberately available even when the
+                pattern is blocked above (that's the whole point: working
+                through a pattern that's currently too hard to build, by
+                hand, side by side with the real computed answer). */}
+            <TouchableOpacity
+              style={s.tracePuzzleToggle}
+              onPress={() => setShowTracePuzzle(v => !v)}
+            >
+              <Text style={s.tracePuzzleToggleTxt}>
+                {showTracePuzzle ? '← Hide Practice Tracing' : '✏️ Practice Tracing (Split View)'}
+              </Text>
+            </TouchableOpacity>
+
+            {showTracePuzzle && (
+              <>
+                <View style={s.tracePuzzleSharedHeader}>
+                  <Text style={s.splitPaneLabel}>
+                    {tracePalette.length} starting color{tracePalette.length === 1 ? '' : 's'}:
+                  </Text>
+                  <View style={s.tracePuzzleSwatchRow}>
+                    {tracePalette.map(c => (
+                      <View key={c} style={[s.tracePuzzleSwatch, { backgroundColor: c }]} />
+                    ))}
+                  </View>
+                </View>
+                <View style={s.splitView}>
+                  <View style={s.splitPane}>
+                    <Text style={s.splitPaneLabel}>Your guesses (tap a line to color it)</Text>
+                    <ScrollView horizontal>
+                      <TraceableInstructionView
+                        dualGrid={detailGrid}
+                        guesses={traceGuesses}
+                        onSetGuess={handleSetTraceGuess}
+                        palette={tracePalette}
+                      />
+                    </ScrollView>
+                  </View>
+                  <View style={s.splitPane}>
+                    <Text style={s.splitPaneLabel}>The real computed answer</Text>
+                    <ScrollView horizontal>
+                      <BuildInstructionView
+                        dualGrid={detailGrid}
+                        rowTechniques={rowTechniques}
+                        buildProgress={[]}
+                        onMarkRowDone={() => {}}
+                        onUndoRowDone={() => {}}
+                        hideHeader
+                      />
+                    </ScrollView>
+                  </View>
+                </View>
+              </>
+            )}
+
+            {showTracePuzzle && Object.keys(traceGuesses).length > 0 && (
+              <View style={s.exportWrapper}>
+                <Text style={s.splitPaneLabel}>
+                  Paste this to share what you traced (for review, not needed to keep working)
+                </Text>
+                <Text selectable style={s.exportText}>
+                  {JSON.stringify(traceGuesses)}
+                </Text>
+              </View>
             )}
           </>
         )}
@@ -296,6 +405,7 @@ export default function BuildCenterScreen({
 function makeStyles(theme: Theme) {
   return StyleSheet.create({
     container: { flex: 1, padding: 40, maxWidth: 960, width: '100%', alignSelf: 'center', gap: 4 },
+    containerWide: { maxWidth: 1600 },
     title:     { fontSize: 26, fontWeight: '700', color: theme.text, marginBottom: 4, textAlign: 'center' },
     subtitle:  { fontSize: 13, color: theme.textFaint, textAlign: 'center', marginBottom: 12 },
     errorTxt:  { fontSize: 12, color: theme.danger, textAlign: 'center', marginBottom: 12 },
@@ -357,5 +467,36 @@ function makeStyles(theme: Theme) {
     blockedText:  { fontSize: 13, color: theme.textSubtle, textAlign: 'center', lineHeight: 19 },
     blockedBtn:   { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: theme.purple },
     blockedBtnTxt:{ fontSize: 13, fontWeight: '700', color: theme.textOnPurple },
+
+    tracePuzzleToggle: {
+      alignSelf: 'center',
+      marginTop: 20,
+      marginBottom: 12,
+      paddingVertical: 8,
+      paddingHorizontal: 16,
+      borderRadius: 8,
+      backgroundColor: theme.surfaceMuted,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    tracePuzzleToggleTxt: { fontSize: 13, fontWeight: '700', color: theme.text },
+
+    splitView: { flexDirection: 'row', gap: 16, width: '100%' },
+    splitPane: { flex: 1, minWidth: 0 },
+    splitPaneLabel: { fontSize: 12, fontWeight: '700', color: theme.textMuted, marginBottom: 8, textAlign: 'center' },
+
+    tracePuzzleSharedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 },
+    tracePuzzleSwatchRow: { flexDirection: 'row', gap: 4 },
+    tracePuzzleSwatch: { width: 14, height: 14, borderRadius: 7, borderWidth: 1, borderColor: theme.border },
+
+    exportWrapper: {
+      marginTop: 20,
+      padding: 12,
+      borderRadius: 8,
+      backgroundColor: theme.surfaceMuted,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    exportText: { fontSize: 11, color: theme.textSubtle, fontFamily: 'monospace' },
   });
 }

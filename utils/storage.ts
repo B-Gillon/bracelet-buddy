@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
   patternState: (patternId: string) => `braceletBuddy:patternState:v1:${patternId}`,
   themePreference: 'braceletBuddy:themePreference:v1',
   buildProgress: (patternId: string) => `braceletBuddy:buildProgress:v1:${patternId}`,
+  tracePuzzle: (patternId: string) => `braceletBuddy:tracePuzzle:v1:${patternId}`,
 };
 
 export async function storageGet<T>(key: string): Promise<T | null> {
