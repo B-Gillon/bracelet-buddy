@@ -14,6 +14,7 @@ import {
 import { useBuildProgress } from '../hooks/useBuildProgress';
 import PatternThumbnail from '../components/PatternThumbnail';
 import BuildInstructionView from '../components/BuildInstructionView';
+import { computePatternValidity } from '../utils/patternValidity';
 
 // Picker-mode card grid uses the same diamond-math-derived sizing as My
 // Designs, so cards in both places stay visually consistent.
@@ -39,10 +40,17 @@ export default function BuildCenterScreen({
   target,
   onSelectPattern,
   onChoosePattern,
+  onOpenInDesignCenter,
 }: {
   target: BuildTarget | null;
   onSelectPattern: (clientId: string) => void;
   onChoosePattern: () => void;
+  // Open-gate (see PATTERN-VALIDITY-PLAN.md section 4): a pattern with a
+  // genuine knotting contradiction can't be opened here at all - instead of
+  // showing broken/ambiguous instructions, we hard-block and send the user
+  // back to Design Center (via the same loader App.tsx already uses for "open
+  // from My Designs") to fix it first.
+  onOpenInDesignCenter: (clientId: string) => void;
 }) {
   const { user, loading: authLoading } = useAuth();
   const { theme } = useTheme();
@@ -87,6 +95,12 @@ export default function BuildCenterScreen({
   // "already in memory from Yes, Build It!" optimization the grid data has.
   const { rowTechniques, buildProgress, markRowDone, undoRowDone, setRowTechnique, hasUnsavedChanges, saveNow } =
     useBuildProgress(user, target?.clientId ?? null);
+
+  // Open-gate check - only runs once we actually have grid data (detail
+  // mode). Same algorithm Design Center's Save uses (utils/patternValidity),
+  // so "can't save without warning" and "can't open here" are always
+  // perfectly consistent with each other.
+  const validity = useMemo(() => (detailGrid ? computePatternValidity(detailGrid) : null), [detailGrid]);
 
   // Guards against losing progress on a real page close/refresh - only
   // fires while there's a genuine unsaved change sitting in the (brief)
@@ -208,14 +222,30 @@ export default function BuildCenterScreen({
               />
             </View>
 
-            <BuildInstructionView
-              dualGrid={detailGrid}
-              rowTechniques={rowTechniques}
-              buildProgress={buildProgress}
-              onMarkRowDone={markRowDone}
-              onUndoRowDone={undoRowDone}
-              onSetRowTechnique={setRowTechnique}
-            />
+            {validity && !validity.valid ? (
+              <View style={s.blockedWrapper}>
+                <Text style={s.blockedTitle}>This Pattern Can't Be Opened Yet</Text>
+                <Text style={s.blockedText}>
+                  This pattern can't be opened yet - it has a knotting conflict that needs to be
+                  fixed in Design Center first.
+                </Text>
+                <TouchableOpacity
+                  style={s.blockedBtn}
+                  onPress={() => onOpenInDesignCenter(target.clientId)}
+                >
+                  <Text style={s.blockedBtnTxt}>Fix in Design Center</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <BuildInstructionView
+                dualGrid={detailGrid}
+                rowTechniques={rowTechniques}
+                buildProgress={buildProgress}
+                onMarkRowDone={markRowDone}
+                onUndoRowDone={undoRowDone}
+                onSetRowTechnique={setRowTechnique}
+              />
+            )}
           </>
         )}
       </ScrollView>
@@ -311,5 +341,21 @@ function makeStyles(theme: Theme) {
     cardMetaTxt: { fontSize: 12, color: theme.textSubtle },
 
     previewWrapper: { alignItems: 'center', marginVertical: 20 },
+
+    blockedWrapper: {
+      alignItems: 'center',
+      gap: 10,
+      maxWidth: 480,
+      alignSelf: 'center',
+      borderWidth: 1,
+      borderColor: theme.danger,
+      borderRadius: 12,
+      padding: 20,
+      backgroundColor: theme.surfaceMuted,
+    },
+    blockedTitle: { fontSize: 16, fontWeight: '700', color: theme.text, textAlign: 'center' },
+    blockedText:  { fontSize: 13, color: theme.textSubtle, textAlign: 'center', lineHeight: 19 },
+    blockedBtn:   { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: theme.purple },
+    blockedBtnTxt:{ fontSize: 13, fontWeight: '700', color: theme.textOnPurple },
   });
 }

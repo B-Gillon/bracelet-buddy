@@ -2,7 +2,6 @@ import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal } from 'react-native';
 import { Theme } from '../constants/theme';
 import { useTheme } from '../context/ThemeContext';
-import { FeasibilityResult } from '../utils/patternFeasibility';
 
 // The four small, self-contained modals from BuildScreen.tsx: Start Over
 // confirm, Account Required, Save As New, and Saved (which offers to send
@@ -175,6 +174,42 @@ export function SaveAsNewModal({
   );
 }
 
+// Shown on Save when utils/patternValidity finds a real, provable
+// contradiction (an "impossible knot" - see PATTERN-VALIDITY-PLAN.md).
+// Save itself already succeeded by the time this shows (validity never
+// blocks Save, by design) - this is purely informational, so it only needs
+// one button. The specific offending diamonds get their own flash+border
+// treatment directly on the grid (see PatternGridView.tsx) - this modal's
+// job is just to explain why, not to point at them itself.
+export function InvalidPatternModal({
+  visible, onDismiss,
+}: {
+  visible: boolean;
+  onDismiss: () => void;
+}) {
+  const { theme } = useTheme();
+  const s = useMemo(() => makeStyles(theme), [theme]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <View style={s.modalOverlay}>
+        <View style={s.modalCard}>
+          <Text style={s.modalTitle}>Pattern Can't Be Built</Text>
+          <Text style={s.modalText}>
+            This pattern isn't physically possible to tie - some knots have conflicting colors.
+            The affected knots are outlined below. Fix them, then save again.
+          </Text>
+          <View style={s.modalButtonsRow}>
+            <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onDismiss}>
+              <Text style={s.modalConfirmTxt}>Got It</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export function SavedModal({
   visible, cloudSaveError, onNotNow, onBuildIt,
 }: {
@@ -207,45 +242,6 @@ export function SavedModal({
             </TouchableOpacity>
             <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onBuildIt}>
               <Text style={s.modalConfirmTxt}>Yes, Build It!</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-// Shows the result of utils/patternFeasibility.ts's check - a first pass,
-// experimental feature (see chat history for the reasoning behind the
-// algorithm). Reports either "looks buildable" or which starting positions
-// couldn't complete a valid string path through the pattern.
-export function CheckPatternModal({
-  visible, result, onClose,
-}: {
-  visible: boolean;
-  result: FeasibilityResult | null;
-  onClose: () => void;
-}) {
-  const { theme } = useTheme();
-  const s = useMemo(() => makeStyles(theme), [theme]);
-
-  const feasible = result?.feasible === true;
-  const title = !result ? 'Checking...' : feasible ? 'Looks Buildable!' : 'Possible Problem Found';
-  const description = !result
-    ? ''
-    : feasible
-      ? "This pattern's colors trace all the way through cleanly - every string has a valid path from start to finish."
-      : `${result.expected - result.flow} of ${result.expected} starting string${result.expected === 1 ? '' : 's'} couldn't find a complete path through the pattern. Trouble spot${result.blockedStartPositions.length === 1 ? '' : 's'} at starting position${result.blockedStartPositions.length === 1 ? '' : 's'}: ${result.blockedStartPositions.join(', ')}.`;
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={s.modalOverlay}>
-        <View style={s.modalCard}>
-          <Text style={s.modalTitle}>{title}</Text>
-          {!!description && <Text style={s.modalText}>{description}</Text>}
-          <View style={s.modalButtonsRow}>
-            <TouchableOpacity style={s.modalConfirmAccentBtn} onPress={onClose}>
-              <Text style={s.modalConfirmTxt}>Got It</Text>
             </TouchableOpacity>
           </View>
         </View>

@@ -47,8 +47,6 @@ export default function BuildScreenHeader({
   isSavingCloud,
   onDeleteRequest,
   isDeleting,
-  onCheckPattern,
-  isCheckingPattern,
 }: {
   name: string;
   onNameChange: (name: string) => void;
@@ -70,8 +68,6 @@ export default function BuildScreenHeader({
   isSavingCloud: boolean;
   onDeleteRequest: () => void;
   isDeleting: boolean;
-  onCheckPattern: () => void;
-  isCheckingPattern: boolean;
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
@@ -130,14 +126,6 @@ export default function BuildScreenHeader({
         </View>
 
         <View style={s.headerRightGroup}>
-          <TouchableOpacity
-            style={[s.toolbarBtn, s.checkPatternBtn, isCheckingPattern && s.toolbarBtnDisabled]}
-            onPress={onCheckPattern}
-            disabled={isCheckingPattern}
-          >
-            <Text style={s.checkPatternBtnTxt}>{isCheckingPattern ? 'Checking...' : 'Check Pattern'}</Text>
-          </TouchableOpacity>
-
           <TouchableOpacity style={s.toolbarBtn} onPress={onStartOver}>
             <Text style={s.toolbarBtnTxt}>Start Over</Text>
           </TouchableOpacity>
@@ -192,8 +180,6 @@ function makeStyles(theme: Theme) {
     toolbarBtnTxt:      { fontSize: 12, fontWeight: '600', color: theme.textMuted },
     saveBtn:            { backgroundColor: theme.purple, borderColor: theme.purple },
     saveBtnTxt:         { fontSize: 12, fontWeight: '700', color: theme.textOnPurple },
-    checkPatternBtn:    { backgroundColor: theme.surfaceMutedAlt },
-    checkPatternBtnTxt: { fontSize: 12, fontWeight: '700', color: theme.textMuted },
     zoomRow:            { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: theme.border, borderRadius: 8, overflow: 'hidden' },
     zoomBtn:            { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.surfaceMutedAlt },
     zoomBtnDisabled:    { opacity: 0.35 },

@@ -5,6 +5,7 @@ import { Theme } from '../constants/theme';
 import { useTheme } from '../context/ThemeContext';
 import { DualGrid, RowTechnique, RowTechniques, BuildProgress } from '../types/pattern';
 import { buildInstructionRows, candidatePositions, InstructionKnot } from '../utils/knotInstructions';
+import { resolveHiddenColors } from '../utils/patternValidity';
 
 // The Build Center detail page's main instructional view - ONE continuous
 // diagram for the whole pattern, matching how a real reference pattern
@@ -88,6 +89,14 @@ export default function BuildInstructionView({
     () => buildInstructionRows(dualGrid, rowTechniques),
     [dualGrid, rowTechniques]
   );
+
+  // TEMPORARY - for verifying patternValidity.ts against a real pattern
+  // before trusting it, per PATTERN-VALIDITY-PLAN.md section 7's own
+  // warning that code review alone isn't enough. Remove once verified.
+  useMemo(() => {
+    const result = resolveHiddenColors(rows);
+    console.log('PATTERN VALIDITY DEBUG:', JSON.stringify(result));
+  }, [rows]);
 
   const doneSet = useMemo(() => new Set(buildProgress), [buildProgress]);
 

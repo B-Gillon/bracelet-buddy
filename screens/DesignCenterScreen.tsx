@@ -5,8 +5,10 @@ import { Theme } from '../constants/theme';
 
 export default function DesignCenterScreen({
   onStartFromScratch,
+  onOpenTechniqueLab,
 }: {
   onStartFromScratch: () => void;
+  onOpenTechniqueLab: () => void;
 }) {
   const { theme } = useTheme();
   const s = useMemo(() => makeStyles(theme), [theme]);
@@ -36,6 +38,12 @@ export default function DesignCenterScreen({
           <Text style={s.cardDesc}>Turn a photo of a bracelet into a pattern.</Text>
           <Text style={s.comingSoon}>Coming Soon</Text>
         </View>
+
+        <TouchableOpacity style={s.card} onPress={onOpenTechniqueLab}>
+          <Text style={s.cardEmoji}>🧪</Text>
+          <Text style={s.cardTitle}>Technique Lab (Beta)</Text>
+          <Text style={s.cardDesc}>Pick real string colors and techniques - the result is always buildable.</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );

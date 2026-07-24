@@ -1,9 +1,11 @@
-import React, { useRef, useState } from 'react';
-import { View, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, View, StyleSheet } from 'react-native';
 import Svg, { Rect, Polygon } from 'react-native-svg';
 import { DualGrid } from '../types/pattern';
 import { CellInfo, buildCells } from '../utils/diamondGrid';
 import { useTheme } from '../context/ThemeContext';
+
+const AnimatedPolygon = Animated.createAnimatedComponent(Polygon);
 
 // A diamond that's part of the current selection (before Duplicate/Move is
 // clicked) or part of a floating Duplicate/Move copy (after).
@@ -37,7 +39,7 @@ export type LogicalCell = { pass: 'main' | 'gap'; r: number; c: number };
 // colored-only filter only applies to an actual box drag.
 export default function PatternGridView({
   dualGrid, orientation, onCellPress, onCellDrag, onCellRelease, zoom, selectedCells, floatingCells,
-  boxSelectEnabled, onBoxSelect,
+  boxSelectEnabled, onBoxSelect, invalidCells, invalidBorderColor,
 }: {
   dualGrid:       DualGrid;
   orientation:    'horizontal' | 'vertical';
@@ -49,8 +51,38 @@ export default function PatternGridView({
   floatingCells?:  FloatingCell[] | null;
   boxSelectEnabled?: boolean;
   onBoxSelect?:      (cells: LogicalCell[]) => void;
+  // Diamonds involved in a real, provable pattern-validity contradiction
+  // (see utils/patternValidity.ts) - keyed exactly like selectedCells
+  // ('pass:r:c'). Highlighted with BOTH a static border (so it still shows
+  // up in a still screenshot) and a pulsing flash (so it can't be missed
+  // live) - see PATTERN-VALIDITY-PLAN.md section 4 for why it's both
+  // together, not either alone. invalidBorderColor is computed per-pattern
+  // against the live palette (see computeContrastBorderColor) so it can
+  // never accidentally match a color the pattern actually uses.
+  invalidCells?:      Set<string> | null;
+  invalidBorderColor?: string | null;
 }) {
   const { theme } = useTheme();
+
+  // One shared animated value drives every invalid-cell flash in lockstep,
+  // rather than a separate Animated.Value per cell - cheaper, and reads
+  // better visually (every offending diamond pulses together instead of
+  // out of phase with each other). useNativeDriver is false since this
+  // animates an SVG shape's opacity attribute, not a native View style -
+  // Expo Web (react-native-web) doesn't support the native driver for that.
+  const flashAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!invalidCells || invalidCells.size === 0) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(flashAnim, { toValue: 1, duration: 650, useNativeDriver: false }),
+        Animated.timing(flashAnim, { toValue: 0, duration: 650, useNativeDriver: false }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [invalidCells, flashAnim]);
+  const flashOpacity = flashAnim.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.65] });
   const BASE = 40;
   const D    = BASE * zoom;
   const H    = D / 2;
@@ -266,6 +298,34 @@ export default function PatternGridView({
               stroke={theme.purple}
               strokeWidth={2}
             />
+          );
+        })}
+
+        {/* Invalid-pattern highlight - a knot involved in a real,
+            provable contradiction (see utils/patternValidity.ts). Two
+            layers together, deliberately: a static border ring that's
+            always fully visible (shows up even in a still screenshot, and
+            for anyone with reduced-motion needs), plus a pulsing color
+            wash on top (catches the eye live, in case the static border
+            alone gets missed). */}
+        {invalidCells && invalidCells.size > 0 && invalidBorderColor && cells.map(cell => {
+          const { r, c } = resolveCell(cell);
+          if (!invalidCells.has(cell.pass + ':' + r + ':' + c)) return null;
+          return (
+            <React.Fragment key={'invalid-' + cell.key}>
+              <AnimatedPolygon
+                points={cell.points}
+                fill={invalidBorderColor}
+                opacity={flashOpacity}
+              />
+              <Polygon
+                points={cell.points}
+                fill="none"
+                stroke={invalidBorderColor}
+                strokeWidth={3.5}
+                strokeLinejoin="round"
+              />
+            </React.Fragment>
           );
         })}
 

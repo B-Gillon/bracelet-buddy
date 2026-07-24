@@ -11,7 +11,6 @@ import NewPatternScreen from './screens/NewPatternScreen';
 import ColorPickerScreen from './screens/ColorPickerScreen';
 import BuildScreen from './screens/BuildScreen';
 import BuildCenterScreen, { BuildTarget } from './screens/BuildCenterScreen';
-import TechniqueLabScreen from './screens/TechniqueLabScreen';
 import { PatternConfig, DualGrid } from './types/pattern';
 import { storageGet, storageSet, storageRemove, STORAGE_KEYS } from './utils/storage';
 import { loadPattern } from './utils/patterns';
@@ -30,8 +29,7 @@ type Screen =
   | 'build-center'
   | 'new-pattern'
   | 'color-picker'
-  | 'build'
-  | 'technique-lab';
+  | 'build';
 
 // Only these two steps hold a "real" in-progress pattern worth restoring
 // after a refresh. 'new-pattern' is just an empty form - nothing to lose.
@@ -43,7 +41,7 @@ function isRestorableScreen(screen: Screen): screen is RestorableScreen {
 
 const ALL_SCREENS: Screen[] = [
   'home', 'patterns', 'my-designs', 'tutorials', 'settings',
-  'design-center', 'build-center', 'new-pattern', 'color-picker', 'build', 'technique-lab',
+  'design-center', 'build-center', 'new-pattern', 'color-picker', 'build',
 ];
 
 // Web-only: the current screen is mirrored into a `?screen=` query param so
@@ -83,7 +81,6 @@ function activeNavForScreen(screen: Screen): AppPage {
     case 'new-pattern':
     case 'color-picker':
     case 'build':
-    case 'technique-lab':
     default:
       return 'design-center';
   }
@@ -209,10 +206,6 @@ function AppInner() {
     setScreen('new-pattern');
   }
 
-  function handleOpenTechniqueLab() {
-    setScreen('technique-lab');
-  }
-
   function handleNext(newConfig: PatternConfig) {
     setConfig(newConfig);
     setScreen('color-picker');
@@ -305,9 +298,8 @@ function AppInner() {
         {screen === 'tutorials' && <TutorialsScreen />}
         {screen === 'settings' && <SettingsScreen />}
         {screen === 'design-center' && (
-          <DesignCenterScreen onStartFromScratch={handleStartFromScratch} onOpenTechniqueLab={handleOpenTechniqueLab} />
+          <DesignCenterScreen onStartFromScratch={handleStartFromScratch} />
         )}
-        {screen === 'technique-lab' && <TechniqueLabScreen />}
         {screen === 'build-center' && (
           <BuildCenterScreen
             target={buildTarget}

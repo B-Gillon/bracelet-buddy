@@ -26,10 +26,9 @@ import {
   AccountRequiredModal,
   SaveAsNewModal,
   SavedModal,
-  CheckPatternModal,
+  InvalidPatternModal,
 } from '../components/BuildScreenModals';
-import { buildInstructionRows } from '../utils/knotInstructions';
-import { checkPatternFeasibility, FeasibilityResult } from '../utils/patternFeasibility';
+import { computePatternValidity, computeContrastBorderColor } from '../utils/patternValidity';
 import ColorsCard from '../components/build-cards/ColorsCard';
 import SelectorCard from '../components/build-cards/SelectorCard';
 import PatternToolCard from '../components/build-cards/PatternToolCard';
@@ -74,9 +73,13 @@ export default function BuildScreen({
   const [manualZoomOverride, setManualZoomOverride] = useState<number | null>(null);
   const [gridViewportWidth, setGridViewportWidth] = useState(0);
   const [showStartOverConfirm, setShowStartOverConfirm] = useState(false);
-  const [showCheckPatternModal, setShowCheckPatternModal] = useState(false);
-  const [checkPatternResult, setCheckPatternResult] = useState<FeasibilityResult | null>(null);
-  const [isCheckingPattern, setIsCheckingPattern] = useState(false);
+  // Pattern-validity check state - see utils/patternValidity.ts and
+  // PATTERN-VALIDITY-PLAN.md. Populated on Save only (not live per-diamond -
+  // a partially-painted pattern isn't a contradiction, it's just
+  // unfinished). Save itself never blocks on this; it's purely for the
+  // popup + the offending diamonds' flash+border highlight.
+  const [showInvalidModal, setShowInvalidModal] = useState(false);
+  const [invalidCells, setInvalidCells] = useState<Set<string>>(new Set());
 
   // Load/save/name/delete concerns for this pattern - hydration, debounced
   // autosave, name-availability checks, and the Save/Save As New/Delete
@@ -618,29 +621,28 @@ export default function BuildScreen({
     setFloatingOp(null);
   }
 
-  // Runs the experimental feasibility check (utils/patternFeasibility.ts)
-  // against the current grid and shows the result in a modal. Reuses
-  // buildInstructionRows the same way BuildInstructionView.tsx does, since
-  // that's already the row-by-row shape the checker expects.
-  function handleCheckPattern() {
-    setIsCheckingPattern(true);
-    setShowCheckPatternModal(true);
-    setCheckPatternResult(null);
-    // Deferred a tick so the "Checking..." state actually paints first on
-    // larger patterns, rather than the button appearing to do nothing
-    // while the check runs synchronously.
-    setTimeout(() => {
-      const rows = buildInstructionRows(dualGrid, null);
-      console.log('CHECK PATTERN DEBUG rows:', JSON.stringify(rows));
-      const result = checkPatternFeasibility(rows);
-      setCheckPatternResult(result);
-      setIsCheckingPattern(false);
-    }, 0);
-  }
-
   // handleSave/handleSavePress/openSaveAsNew/handleSaveAsNew/
   // handleDeletePattern all live in usePatternPersistence now (called
   // above).
+
+  // Runs the pattern-validity check on every Save click, in addition to
+  // (never instead of) the normal save flow above - Save always succeeds
+  // regardless of validity, by design (see PATTERN-VALIDITY-PLAN.md). A
+  // valid pattern just clears any previous highlight; an invalid one pops
+  // the explanation modal and flashes the specific offending diamonds.
+  function handleSaveWithValidityCheck() {
+    const validity = computePatternValidity(dualGrid);
+    if (validity.valid) {
+      setInvalidCells(new Set());
+      setShowInvalidModal(false);
+    } else {
+      setInvalidCells(validity.contradictionCells);
+      setShowInvalidModal(true);
+    }
+    handleSavePress();
+  }
+
+  const invalidBorderColor = useMemo(() => computeContrastBorderColor(palette), [palette]);
 
   if (showColorPicker) {
     return (
@@ -727,12 +729,10 @@ export default function BuildScreen({
       onRedo={handleRedo}
       onClear={handleClear}
       onSaveAsNew={openSaveAsNew}
-      onSave={handleSavePress}
+      onSave={handleSaveWithValidityCheck}
       isSavingCloud={isSavingCloud}
       onDeleteRequest={() => setShowDeleteConfirm(true)}
       isDeleting={isDeleting}
-      onCheckPattern={handleCheckPattern}
-      isCheckingPattern={isCheckingPattern}
     />
   );
 
@@ -958,6 +958,8 @@ export default function BuildScreen({
                       floatingCells={floatingCellsForGrid}
                       boxSelectEnabled={toolMode === 'select' && !floatingOp}
                       onBoxSelect={handleBoxSelect}
+                      invalidCells={invalidCells}
+                      invalidBorderColor={invalidBorderColor}
                     />
                   </ScrollView>
                 </View>
@@ -1030,10 +1032,9 @@ export default function BuildScreen({
           }}
         />
 
-        <CheckPatternModal
-          visible={showCheckPatternModal}
-          result={checkPatternResult}
-          onClose={() => setShowCheckPatternModal(false)}
+        <InvalidPatternModal
+          visible={showInvalidModal}
+          onDismiss={() => setShowInvalidModal(false)}
         />
       </>
     </BuildEditorContext.Provider>

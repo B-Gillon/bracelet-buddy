@@ -66,26 +66,33 @@ import { DualGrid, RowTechnique, RowTechniques } from '../types/pattern';
 // previous row (the two diamonds it's nested between - see diamondGrid.ts).
 // If this knot's color matches its LEFT parent (and not its right one),
 // that color visibly moved rightward to get here, so the arrow points
-// right; if it matches the right parent, the arrow points left. Real
-// patterns often hold one direction for many rows in a row (a long
-// diagonal run) and only flip where the colors actually show a reversal -
-// this reproduces that instead of forcing a symmetric chevron on every
-// single row. Knots where the color matches both parents (a solid run) or
-// neither (a fresh color introduced this row) are genuinely undetermined
-// from color alone, so they simply inherit whichever direction is
-// determined nearby (the ambiguity doesn't matter visually either way -
-// see BUILD-CENTER-INSTRUCTIONS-PLAN.md). The very first row has no real
-// previous row to compare against (the leading boundary column doesn't
-// count - see above), so it instead borrows the SAME comparison against
-// the row right after it (which direction would this row's colors have
-// "arrived from" if time ran backwards), then flips the result - a knot
-// that looks like it's departing rightward when read forwards is the same
-// physical motion as one arriving leftward when read backwards. This keeps
-// the first row consistent with whatever direction the rest of the
-// pattern is actually running, instead of an arbitrary centered chevron.
+// right; if it matches the right parent, the arrow points left.
+//
+// PREFERRED PATH vs FALLBACK - there are now two ways this gets decided,
+// and callers should always prefer the first:
+//   1. computeArrowsFromEdges - when a resolved edge graph from
+//      utils/patternValidity.ts is passed in, direction is read straight
+//      off it: whichever candidate edge actually carries this knot's own
+//      color (per the proven {own, hidden} split) IS the match, full stop -
+//      no comparison or guessing involved, and no first-row special case
+//      needed either (see that function's own comment for why).
+//   2. computeArrows/flipArrows - the ORIGINAL heuristic, kept only as a
+//      defensive fallback for a caller that doesn't have a resolved graph
+//      handy. Real patterns often hold one direction for many rows (a long
+//      diagonal run) and only flip where the colors actually show a
+//      reversal; knots where the color matches both parents (a solid run)
+//      or neither (a fresh color introduced this row) are genuinely
+//      undetermined from color alone, so they simply inherit whichever
+//      direction is determined nearby. The very first row has no real
+//      previous row to compare against (the leading boundary column isn't
+//      meaningful to a color-only comparison - see above), so THIS PATH
+//      ONLY borrows the row right after it instead (flipped - see
+//      flipArrows) - computeArrowsFromEdges doesn't need that trick, since
+//      the boundary column's edges in the resolved graph are just as real
+//      as anywhere else (see patternValidity.ts's own CORRECTED note).
 // Only a fully solid row with no usable neighbor data in either direction
-// falls back to that chevron. A manual per-row technique override, if one
-// is ever stored, still wins outright over auto-detection. (Edge connector
+// falls back to a centered chevron. A manual per-row technique override, if
+// one is ever stored, still wins outright over either path. (Edge connector
 // knots still get a computed arrow like any other position - it's simply
 // unused by the UI, since no real tie/direction happens there.)
 //
@@ -111,6 +118,29 @@ import { DualGrid, RowTechnique, RowTechniques } from '../types/pattern';
 // COUNT of starting strings (every one of the first row's knots ties
 // exactly 2 strings, so the total is just that row's own colors, each
 // counted twice) - see BuildInstructionView.tsx's colorTally.
+//
+// UPDATE - the "second string per knot" problem described above has since
+// been solved properly, as a global propagation problem rather than a
+// local comparison - see utils/patternValidity.ts, which both resolves
+// every provable hidden color for Build Center's diagram AND detects when
+// a pattern has no valid physical threading at all.
+//
+// UPDATE 2 - this file's own arrow-direction logic WAS left unaffected when
+// the above shipped, on the theory that it was "purely cosmetic, never a
+// physical-validity claim" and so couldn't conflict with the new resolved
+// graph. That theory was wrong: direction and hidden-color are the same
+// underlying fact (whichever candidate edge carries a knot's own color IS
+// the side its arrow should point toward), just asked two different ways -
+// and a live check against a real, fully-valid pattern ("My First
+// Bracelet!") found the two disagreeing on roughly 1 in 10 knots (the
+// heuristic below comparing against the WRONG thing - a neighbor's own
+// displayed color, which isn't necessarily what's actually flowing on this
+// specific edge - the same root cause PATTERN-VALIDITY-PLAN.md documents
+// for why hidden-color propagation itself couldn't be a local comparison
+// either). Fixed by computeArrowsFromEdges below, which every real caller
+// should use now - see PREFERRED PATH vs FALLBACK above. computeArrows/
+// flipArrows are kept only as a defensive fallback for a caller with no
+// resolved graph on hand.
 
 export type InstructionKnot = {
   key: string;
@@ -175,8 +205,10 @@ function arrowForDisplayPos(technique: RowTechnique, displayPos: number): 'left'
 // Reads one grid column's colors in REVERSED (display) order - see the
 // REVERSAL CONVENTION note above. gridRows[knotCount-1] (the grid's last
 // row) becomes displayPos 0 (leftmost), gridRows[0] becomes displayPos
-// knotCount-1 (rightmost).
-function readColumnColors(
+// knotCount-1 (rightmost). Exported so utils/patternValidity.ts shares this
+// exact geometry instead of re-deriving it - see buildRawRows below for why
+// that matters.
+export function readColumnColors(
   gridRows: (string | null)[][],
   gridCol: number,
   knotCount: number
@@ -187,6 +219,63 @@ function readColumnColors(
     colors.push(gridRows[gridRowIndex]?.[gridCol] ?? null);
   }
   return colors;
+}
+
+// One entry per RAW (unfiltered) instructional position, gap-first,
+// interleaved gap/main/gap/.../gap down the pattern's length - see
+// buildRawRows below. `colors` is already in display order (readColumnColors
+// above); `techniqueSlot` is only meaningful to buildInstructionRows.
+export type RawRow = {
+  index: number;
+  pass: 'main' | 'gap';
+  gridColL: number;
+  colors: (string | null)[];
+  techniqueSlot: number;
+};
+
+// The exact key format utils/patternValidity.ts's edgeColors map uses for
+// each endpoint (`${pass}-${gridColL}-${p}`, joined "source->target") -
+// factored out so nothing ever quietly drifts out of sync with that map's
+// own keys (see computePatternValidity's doc comment).
+function rawKnotKey(row: RawRow, p: number): string {
+  return `${row.pass}-${row.gridColL}-${p}`;
+}
+
+// The full, unfiltered gap/main/gap/.../gap sequence - including the two
+// boundary gap columns (L=0 and L=lengthCount) that buildInstructionRows
+// drops before returning (see LEADING/TRAILING BOUNDARY COLUMNS above).
+// Factored out because utils/patternValidity.ts needs those two boundary
+// rows too, for a different reason than rendering: they're the literal
+// starting/ending string layout, which is exactly as certain as a dot (see
+// PATTERN-VALIDITY-PLAN.md) - not just a rendering artifact to discard, the
+// way buildInstructionRows treats them. Keeping one shared builder means the
+// two consumers can never quietly disagree about the underlying geometry,
+// the same reasoning as utils/diamondGrid.ts's buildCells.
+export function buildRawRows(dualGrid: DualGrid): RawRow[] {
+  const widthCount = dualGrid.main.length;
+  const lengthCount = widthCount > 0 ? dualGrid.main[0].length : 0;
+  const gapWidthCount = widthCount + 1;
+
+  const raw: RawRow[] = [];
+  for (let L = 0; L <= lengthCount; L++) {
+    raw.push({
+      index: instructionRowIndexForCell('gap', L, lengthCount),
+      pass: 'gap',
+      gridColL: L,
+      colors: readColumnColors(dualGrid.gap, L, gapWidthCount),
+      techniqueSlot: Math.min(L, lengthCount - 1),
+    });
+    if (L < lengthCount) {
+      raw.push({
+        index: instructionRowIndexForCell('main', L, lengthCount),
+        pass: 'main',
+        gridColL: L,
+        colors: readColumnColors(dualGrid.main, L, widthCount),
+        techniqueSlot: L,
+      });
+    }
+  }
+  return raw;
 }
 
 // Determines this row's per-knot directions by tracing which way each
@@ -251,6 +340,69 @@ function flipArrows(arrows: ('left' | 'right')[]): ('left' | 'right')[] {
   return arrows.map(a => (a === 'left' ? 'right' : 'left'));
 }
 
+// Determines this row's per-knot directions directly from
+// utils/patternValidity's resolved edge graph - the PREFERRED path, see
+// PREFERRED PATH vs FALLBACK above. Whichever of a knot's two backward
+// candidate edges actually carries its own displayed color (per the
+// provably-correct {own, hidden} split) IS the matching connection, so
+// direction falls out for free instead of needing its own separate guess -
+// same geometric left/right pairing computeArrows uses, just read off the
+// proven graph instead of compared by color.
+//
+// No first-row special case is needed here (unlike computeArrows' fallback
+// path): the leading boundary column's edges are still real, resolved graph
+// edges - patternValidity only treats that column's own two TRUE dot
+// positions as ground truth, not the whole column (see patternValidity.ts's
+// own CORRECTED note) - so comparing backward against it is exactly as
+// meaningful as any other row transition.
+function computeArrowsFromEdges(
+  row: RawRow,
+  prevRow: RawRow | null,
+  edgeColors: Map<string, string>,
+  fallbackTechnique: RowTechnique
+): ('left' | 'right')[] {
+  const n = row.colors.length;
+  const arrows: ('left' | 'right' | null)[] = row.colors.map(() => null);
+
+  if (prevRow) {
+    const srcLen = prevRow.colors.length;
+    const neighborIsWider = srcLen > n;
+    for (let p = 0; p < n; p++) {
+      const own = row.colors[p];
+      if (own == null) continue;
+      const leftSp = neighborIsWider ? p : p - 1;
+      const rightSp = neighborIsWider ? p + 1 : p;
+      const leftVal = leftSp >= 0 && leftSp < srcLen
+        ? edgeColors.get(`${rawKnotKey(prevRow, leftSp)}->${rawKnotKey(row, p)}`) ?? null
+        : null;
+      const rightVal = rightSp >= 0 && rightSp < srcLen
+        ? edgeColors.get(`${rawKnotKey(prevRow, rightSp)}->${rawKnotKey(row, p)}`) ?? null
+        : null;
+      const leftMatch = leftVal != null && leftVal === own;
+      const rightMatch = rightVal != null && rightVal === own;
+      if (leftMatch && !rightMatch) arrows[p] = 'right';
+      else if (rightMatch && !leftMatch) arrows[p] = 'left';
+      // Both match (a solid knot - own === hidden) or neither resolved
+      // (shouldn't happen once a pattern is confirmed valid, only possible
+      // for an invalid one that got here anyway) stays undetermined here -
+      // filled in below exactly like the heuristic path.
+    }
+  }
+
+  let last: 'left' | 'right' | null = null;
+  for (let p = 0; p < n; p++) {
+    if (arrows[p] != null) last = arrows[p];
+    else if (last != null) arrows[p] = last;
+  }
+  last = null;
+  for (let p = n - 1; p >= 0; p--) {
+    if (arrows[p] != null) last = arrows[p];
+    else if (last != null) arrows[p] = last;
+  }
+
+  return arrows.map((a, p) => a ?? arrowForDisplayPos(fallbackTechnique, p));
+}
+
 // Every knot sits nested between exactly two positions in the adjacent
 // row (the two diamonds it's geometrically between - see diamondGrid.ts).
 // Rather than picking just one of those two as "the" connection, this
@@ -266,73 +418,59 @@ export function candidatePositions(sourcePos: number, sourceCount: number, targe
 
 export function buildInstructionRows(
   dualGrid: DualGrid,
-  rowTechniques: RowTechniques | null | undefined
+  rowTechniques: RowTechniques | null | undefined,
+  // The resolved edge graph from utils/patternValidity's computePatternValidity
+  // (its `edgeColors`) - PREFERRED, see PREFERRED PATH vs FALLBACK above.
+  // Every real caller has one on hand (BuildInstructionView already computes
+  // validity for the connecting lines - see that component). Optional, and
+  // falls back to the original color-only heuristic when omitted, purely as
+  // a defensive default for any future caller that doesn't have one yet.
+  edgeColors?: Map<string, string> | null
 ): InstructionRow[] {
+  const raw = buildRawRows(dualGrid);
   const widthCount = dualGrid.main.length;
   const lengthCount = widthCount > 0 ? dualGrid.main[0].length : 0;
-  const gapWidthCount = widthCount + 1;
 
-  type RawRow = {
-    index: number;
-    pass: 'main' | 'gap';
-    gridColL: number;
-    colors: (string | null)[];
-    techniqueSlot: number;
-  };
-  const raw: RawRow[] = [];
-  for (let L = 0; L <= lengthCount; L++) {
-    raw.push({
-      index: instructionRowIndexForCell('gap', L, lengthCount),
-      pass: 'gap',
-      gridColL: L,
-      colors: readColumnColors(dualGrid.gap, L, gapWidthCount),
-      techniqueSlot: Math.min(L, lengthCount - 1),
-    });
-    if (L < lengthCount) {
-      raw.push({
-        index: instructionRowIndexForCell('main', L, lengthCount),
-        pass: 'main',
-        gridColL: L,
-        colors: readColumnColors(dualGrid.main, L, widthCount),
-        techniqueSlot: L,
-      });
-    }
-  }
-
-  // Arrow/continuity detection runs over the FULL, unfiltered sequence,
-  // EXCEPT the two boundary columns themselves never count as neighbor
-  // data (only raw[0] and raw[raw.length - 1] can ever be one - see
-  // LEADING/TRAILING BOUNDARY COLUMNS above for why they're always
-  // exactly the first and last raw entries). They're a rendering artifact
-  // representing the starting strand layout and finishing tail, not a
-  // real tied row - without this exclusion the very first row would
-  // silently borrow the leading boundary column as its "previous" row
-  // (it technically has real color data), when the documented intent has
-  // always been for the first row to use forward look-ahead instead (see
-  // CONTINUITY-BASED DIRECTION above).
   const rows: (InstructionRow & { isBoundaryColumn: boolean })[] = [];
   for (let i = 0; i < raw.length; i++) {
     const r = raw[i];
-    const prevIsBoundary = i - 1 === 0;
-    const nextIsBoundary = i + 1 === raw.length - 1;
-    const prevColors = i > 0 && !prevIsBoundary ? raw[i - 1].colors : null;
-    const nextColors = i < raw.length - 1 && !nextIsBoundary ? raw[i + 1].colors : null;
     const knotCount = r.colors.length;
     const stored = rowTechniques?.[r.techniqueSlot];
     const fallbackTechnique = resolveRowTechnique(stored, knotCount);
 
     // An explicit manual override (kept for backward-compat, though there's
-    // no UI to set one anymore) always wins outright - otherwise, auto-
-    // detect from actual color continuity, preferring the row before this
-    // one and only borrowing the row after it (flipped - see flipArrows)
-    // when there's nothing earlier to compare against at all.
-    const arrows = stored
-      ? r.colors.map((_, p) => arrowForDisplayPos(stored, p))
-      : prevColors
+    // no UI to set one anymore) always wins outright. Otherwise, prefer the
+    // resolved-graph path (computeArrowsFromEdges - no first-row special
+    // case needed, see its own comment); only fall back to the color-only
+    // heuristic (with ITS first-row forward-flip trick - see CONTINUITY-
+    // BASED DIRECTION above) when no resolved graph was passed in at all.
+    let arrows: ('left' | 'right')[];
+    if (stored) {
+      arrows = r.colors.map((_, p) => arrowForDisplayPos(stored, p));
+    } else if (edgeColors) {
+      arrows = computeArrowsFromEdges(r, i > 0 ? raw[i - 1] : null, edgeColors, fallbackTechnique);
+    } else {
+      // Arrow/continuity detection runs over the FULL, unfiltered sequence,
+      // EXCEPT the two boundary columns themselves never count as neighbor
+      // data (only raw[0] and raw[raw.length - 1] can ever be one - see
+      // LEADING/TRAILING BOUNDARY COLUMNS above for why they're always
+      // exactly the first and last raw entries). They're a rendering
+      // artifact representing the starting strand layout and finishing
+      // tail, not a real tied row - without this exclusion the very first
+      // row would silently borrow the leading boundary column as its
+      // "previous" row (it technically has real color data), when the
+      // documented intent has always been for the first row to use forward
+      // look-ahead instead (see CONTINUITY-BASED DIRECTION above).
+      const prevIsBoundary = i - 1 === 0;
+      const nextIsBoundary = i + 1 === raw.length - 1;
+      const prevColors = i > 0 && !prevIsBoundary ? raw[i - 1].colors : null;
+      const nextColors = i < raw.length - 1 && !nextIsBoundary ? raw[i + 1].colors : null;
+      arrows = prevColors
         ? computeArrows(r.colors, prevColors, fallbackTechnique)
         : nextColors
           ? flipArrows(computeArrows(r.colors, nextColors, fallbackTechnique))
           : r.colors.map((_, p) => arrowForDisplayPos(fallbackTechnique, p));
+    }
 
     rows.push({
       index: r.index,
@@ -340,7 +478,7 @@ export function buildInstructionRows(
       pass: r.pass,
       isBoundaryColumn: r.pass === 'gap' && (r.gridColL === 0 || r.gridColL === lengthCount),
       knots: r.colors.map((color, p) => ({
-        key: `${r.pass}-${r.gridColL}-${p}`,
+        key: rawKnotKey(r, p),
         color,
         arrow: arrows[p],
         displayPos: p,
