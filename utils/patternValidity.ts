@@ -161,8 +161,22 @@ function cellKeyFromInstructionPosition(rows: InstructionRow[], row: number, pos
 // wrong answer - that's the safe default while this gets rebuilt.
 export function computePatternValidity(dualGrid: DualGrid): PatternValidityResult {
   const rows = buildInstructionRows(dualGrid, null);
-  const hidden: (string | null)[][] = rows.map(r => r.knots.map(() => null));
-  return { valid: true, contradictions: [], hidden, edges: {}, invalidCells: new Set(), invalidBorderColor: '#39FF14' };
+  const { hidden, contradictions, edges } = resolveHiddenColorsFast(rows);
+
+  const invalidCells = new Set<string>();
+  for (const c of contradictions) {
+    const key = cellKeyFromInstructionPosition(rows, c.row, c.position);
+    if (key) invalidCells.add(key);
+    if (c.neighborRow != null && c.neighborPosition != null) {
+      const nbKey = cellKeyFromInstructionPosition(rows, c.neighborRow, c.neighborPosition);
+      if (nbKey) invalidCells.add(nbKey);
+    }
+  }
+
+  const palette = Array.from(new Set(rows.flatMap(r => r.knots.map(k => k.color).filter((x): x is string => x != null))));
+  const invalidBorderColor = computeContrastBorderColor(palette);
+
+  return { valid: contradictions.length === 0, contradictions, hidden, edges, invalidCells, invalidBorderColor };
 }
 
 type Ref = { row: number; pos: number };
@@ -414,12 +428,27 @@ class IncrementalSolver {
       }
       const nbOwn = this.colors[edge.nb.row][edge.nb.pos];
       const nbHidden = this.hidden[edge.nb.row][edge.nb.pos];
+
+      if (nbHidden == null) {
+        // The neighbor's hidden isn't known yet - even if only ONE of
+        // this knot's two values currently matches the neighbor's KNOWN
+        // own color, that is NOT proof the edge has to be that value.
+        // The neighbor's still-unknown hidden could later turn out to be
+        // this knot's OTHER value too, making that pairing equally
+        // valid - a genuine choice, not a certainty. This was a real bug:
+        // locking in "the only match visible so far" as if it were "the
+        // only match possible" silently committed to a wrong pairing
+        // that nothing ever went back to reconsider. Leave the edge
+        // unresolved until the neighbor's full pair is actually known.
+        continue;
+      }
+
       const consistent = new Set(setMembers.filter(v => v === nbOwn || v === nbHidden));
       if (consistent.size === 1) {
         const [value] = consistent;
         if (!this.setEdge(edge.key, value, row, pos)) return false;
         queue.push(edge.nb);
-      } else if (consistent.size === 0 && nbHidden != null) {
+      } else if (consistent.size === 0) {
         this.contradictions.push({
           row, position: pos, expected: setMembers.join('/'), found: `${nbOwn}/${nbHidden}`,
           neighborRow: edge.nb.row, neighborPosition: edge.nb.pos,
@@ -427,6 +456,10 @@ class IncrementalSolver {
         this.trail.push({ type: 'contradiction' });
         return false;
       }
+      // consistent.size === 2: both this knot's values are valid against
+      // the neighbor's (now fully known) pair - genuinely ambiguous at
+      // this specific line, left for the final tie-break pass or a real
+      // backtracking decision, never auto-filled.
     }
     return true;
   }
@@ -715,165 +748,9 @@ export function resolveHiddenColors(rows: InstructionRow[]): ValidityResult {
   return resolveHiddenColorsCore(rows, []);
 }
 
-// EXHAUSTIVE VERSION - proper backtracking search, not a single greedy
-// pass. A first version tried each ambiguous knot once, in order, and
-// never revisited a choice - which turned out to be a real bug, not just
-// a simplification: it could lock in an early choice that only turned
-// out to conflict with a LATER knot's requirement, with no way back,
-// even though a fully consistent assignment genuinely existed (this is
-// always true for a real, physically-tied pattern). Caught by testing
-// against real pattern data, not assumed - see chat history.
-//
-// HANDLING GENUINE CONTRADICTIONS (also caught by testing, not assumed):
-// a pattern can have a few real, unavoidable conflicts (proven by base
-// forward deduction alone, no guessing involved) while still being
-// perfectly resolvable everywhere else. An early version bailed out of
-// the whole search the moment ANY contradiction existed anywhere,
-// leaving huge unrelated stretches of an otherwise-fine pattern dashed
-// for no reason. The fix: a hypothesis is rejected only if it introduces
-// a NEW conflict beyond the ones base deduction already proved exist
-// regardless of any choice - the known, unavoidable ones don't block
-// resolving everything else, and the knots directly involved in them are
-// left out of the search entirely (nothing to choose there; they're
-// already proven broken).
-//
-// TIE-BREAK RULES (both explicitly chosen in chat, not invented here):
-// try the knot's own displayed color FIRST, then remaining colors
-// darkest-first. If a choice is later found to conflict with something
-// deeper in the search, it's undone and the next candidate in that same
-// preference order is tried - so the end result still always prefers own,
-// then darkest, it just no longer gets stuck on a choice that looked fine
-// in isolation but wasn't globally consistent.
-export function resolveHiddenColorsExhaustive(rows: InstructionRow[]): ValidityResult {
-  // TEMPORARILY DISABLED - see the note on computePatternValidity above.
-  // This function is ALSO called directly (BuildInstructionView.tsx),
-  // bypassing that one - needs the same safe short-circuit so nothing in
-  // the app can still surface the proven-wrong result through this path.
-  const hidden: (string | null)[][] = rows.map(r => r.knots.map(() => null));
-  return { hidden, contradictions: [], edges: {} };
+// (The old exhaustive backtracking search that lived here has been
+// fully replaced by resolveHiddenColorsFast below - see chat history.)
 
-  /* DISABLED - kept for reference while the correct+fast replacement is built.
-  const base = resolveHiddenColorsCore(rows, []);
-
-  // Location-based signature (which two knots, not the exact wording) so
-  // a baseline conflict is still recognized as "already known" even if a
-  // later hypothesis elsewhere changes the propagation order enough to
-  // phrase it slightly differently.
-  function contradictionSignature(c: Contradiction): string {
-    const a = `${c.row}:${c.position}`;
-    const b = c.neighborRow != null && c.neighborPosition != null ? `${c.neighborRow}:${c.neighborPosition}` : '';
-    return [a, b].sort().join('|');
-  }
-  const baselineSignatures = new Set(base.contradictions.map(contradictionSignature));
-  function isAcceptable(trial: ValidityResult): boolean {
-    return trial.contradictions.every(c => baselineSignatures.has(contradictionSignature(c)));
-  }
-
-  const baselineInvolvedKnots = new Set<string>();
-  for (const c of base.contradictions) {
-    baselineInvolvedKnots.add(`${c.row}:${c.position}`);
-    if (c.neighborRow != null && c.neighborPosition != null) {
-      baselineInvolvedKnots.add(`${c.neighborRow}:${c.neighborPosition}`);
-    }
-  }
-
-  const palette = Array.from(new Set(rows.flatMap(r => r.knots.map(k => k.color).filter((c): c is string => c != null))));
-  const isKnot = rows.map(r => r.knots.map(k => k.isKnot));
-  const colors = rows.map(r => r.knots.map(k => k.color));
-
-  const unresolved: { row: number; pos: number }[] = [];
-  for (let r = 0; r < rows.length; r++) {
-    for (let p = 0; p < colors[r].length; p++) {
-      if (
-        isKnot[r][p] && colors[r][p] != null && base.hidden[r][p] == null &&
-        !baselineInvolvedKnots.has(`${r}:${p}`) // proven broken already - nothing to search for here
-      ) {
-        unresolved.push({ row: r, pos: p });
-      }
-    }
-  }
-
-  function orderedCandidates(row: number, pos: number): string[] {
-    const own = colors[row][pos]!;
-    const rest = palette.filter(c => c !== own).sort((a, b) => relativeLuminance(a) - relativeLuminance(b));
-    return [own, ...rest];
-  }
-
-  const ATTEMPT_LIMIT = 200_000;
-  let attempts = 0;
-
-  function search(
-    index: number,
-    forced: { row: number; pos: number; value: string }[],
-    forcedResult: ValidityResult
-  ): ValidityResult | null {
-    if (index >= unresolved.length) return forcedResult;
-    const { row, pos } = unresolved[index];
-    if (forcedResult.hidden[row][pos] != null) {
-      // Already pinned down as a side effect of an earlier choice in this
-      // branch - nothing to decide here, move on.
-      return search(index + 1, forced, forcedResult);
-    }
-    for (const candidate of orderedCandidates(row, pos)) {
-      if (attempts >= ATTEMPT_LIMIT) return null;
-      attempts++;
-      const nextForced = [...forced, { row, pos, value: candidate }];
-      const trial = resolveHiddenColorsCore(rows, nextForced);
-      if (!isAcceptable(trial)) continue; // introduces a NEW conflict, not just a known one - try next candidate
-      const deeper = search(index + 1, nextForced, trial);
-      if (deeper) return deeper; // this candidate led to a full, valid solution
-      // Otherwise every option further down this branch failed - undo
-      // this choice entirely and try the next candidate for THIS knot.
-    }
-    return null;
-  }
-
-  const solved = search(0, [], base);
-  const result = solved ?? base;
-  // If solved is null: either the search proved no valid assignment
-  // exists at all for the remaining ambiguous knots, or it ran out of
-  // attempt budget first - either way, falling back to the base (forward-
-  // deduction-only) result is the safe, honest choice: it never asserts
-  // anything unproven, it just leaves more knots and lines unresolved
-  // than a full search might have managed to close.
-
-  // FINAL EDGE-LEVEL PASS. Every real knot resolved by the search above
-  // has both own and hidden known - by itself, tryResolveEdges already
-  // fills almost every line from that. But one specific line can, rarely,
-  // still have BOTH of a knot's two colors simultaneously consistent with
-  // its neighbor (own-of-A matches hidden-of-B AND hidden-of-A matches
-  // own-of-B, at once) - which member flows on THIS ONE connection stays
-  // ambiguous even though both knots' full color pairs are completely
-  // known. Same tie-break philosophy, one level down: prefer this knot's
-  // own color if it's a valid option for the line, else the darkest valid
-  // option - guaranteeing every remaining line gets a definite,
-  // always-buildable answer instead of staying dashed.
-  const widths = colors.map(c => c.length);
-  const finalEdges: Record<string, string> = { ...result.edges };
-  for (let r = 0; r < rows.length - 1; r++) {
-    for (let p = 0; p < widths[r]; p++) {
-      if (!isKnot[r][p] || colors[r][p] == null) continue;
-      for (const q of candidatePositions(p, widths[r], widths[r + 1])) {
-        if (!isKnot[r + 1][q]) continue; // dots already have a definite value from seeding
-        const key = edgeKey(r, p, q);
-        if (finalEdges[key] !== undefined) continue;
-        const ownA = colors[r][p];
-        const hidA = result.hidden[r][p];
-        const ownB = colors[r + 1][q];
-        const hidB = result.hidden[r + 1][q];
-        if (ownA == null || hidA == null || ownB == null || hidB == null) continue;
-        const consistent = new Set([ownA, hidA].filter(v => v === ownB || v === hidB));
-        if (consistent.size === 0) continue; // shouldn't happen for a genuinely valid pattern
-        finalEdges[key] = consistent.has(ownA)
-          ? ownA
-          : Array.from(consistent).sort((a, b) => relativeLuminance(a) - relativeLuminance(b))[0];
-      }
-    }
-  }
-
-  return { ...result, edges: finalEdges };
-  */
-}
 
 export function isPatternValid(rows: InstructionRow[]): boolean {
   return resolveHiddenColors(rows).contradictions.length === 0;

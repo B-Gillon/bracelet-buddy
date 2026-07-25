@@ -5,7 +5,7 @@ import { Theme } from '../constants/theme';
 import { useTheme } from '../context/ThemeContext';
 import { DualGrid, RowTechnique, RowTechniques, BuildProgress } from '../types/pattern';
 import { buildInstructionRows, candidatePositions, InstructionKnot } from '../utils/knotInstructions';
-import { resolveHiddenColorsExhaustive, edgeKey, computeContrastBorderColor } from '../utils/patternValidity';
+import { resolveHiddenColorsFast, edgeKey, computeContrastBorderColor } from '../utils/patternValidity';
 
 // The Build Center detail page's main instructional view - ONE continuous
 // diagram for the whole pattern, matching how a real reference pattern
@@ -102,7 +102,7 @@ export default function BuildInstructionView({
   // upgrade a line from the dashed "unconfirmed" fallback to its actual
   // solid color wherever that's now provable, without ever asserting a
   // color that isn't backed by a hard fact.
-  const validity = useMemo(() => resolveHiddenColorsExhaustive(rows), [rows]);
+  const validity = useMemo(() => resolveHiddenColorsFast(rows), [rows]);
 
   const doneSet = useMemo(() => new Set(buildProgress), [buildProgress]);
 
