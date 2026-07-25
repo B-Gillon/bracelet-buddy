@@ -404,7 +404,25 @@ class IncrementalSolver {
     if (hid == null) return true; // still genuinely unresolved - nothing more to check yet
 
     const setMembers = hid === own ? [own] : [own, hid];
+
+    // Track which set member each SIDE (incoming vs outgoing) has already
+    // used - a real knot's two incoming edges must together be {own,
+    // hidden}, ONE EACH, never both the same unless the knot is solid;
+    // same for its two outgoing edges. This was a real bug: each edge was
+    // being decided independently, so nothing stopped two edges on the
+    // SAME side from both landing on the same value even when the knot
+    // wasn't solid.
+    const usedByIncoming = new Set(
+      this.incoming[row][pos].map(nb => this.edgeValue.get(edgeKey(nb.row, nb.pos, pos))).filter((v): v is string => v !== undefined)
+    );
+    const usedByOutgoing = new Set(
+      this.outgoing[row][pos].map(nb => this.edgeValue.get(edgeKey(row, pos, nb.pos))).filter((v): v is string => v !== undefined)
+    );
+
     for (const edge of edges) {
+      const isIncoming = this.incoming[row][pos].some(nb => nb.row === edge.nb.row && nb.pos === edge.nb.pos);
+      const usedThisSide = isIncoming ? usedByIncoming : usedByOutgoing;
+
       const existing = this.edgeValue.get(edge.key);
       if (existing !== undefined) {
         // Already set (by a dot, or by whichever side got there first) -
@@ -443,12 +461,30 @@ class IncrementalSolver {
         continue;
       }
 
-      const consistent = new Set(setMembers.filter(v => v === nbOwn || v === nbHidden));
+      // Only consider values this SIDE hasn't already used up - AND that
+      // the NEIGHBOR hasn't already used up on ITS corresponding side
+      // either (this edge is incoming to me = outgoing from them, or vice
+      // versa). This second check is the actual fix for a real bug: two
+      // DIFFERENT downstream knots could each, independently and validly
+      // from their own point of view, decide they need the same color
+      // from a shared source - each looked fine locally, but the source
+      // physically can't supply the same color twice on the same side.
+      const nbIsIncoming = !isIncoming; // this edge is the opposite side from the neighbor's perspective
+      const nbNeighborList = nbIsIncoming ? this.incoming[edge.nb.row][edge.nb.pos] : this.outgoing[edge.nb.row][edge.nb.pos];
+      const nbUsedThisSide = new Set(
+        nbNeighborList
+          .map(n => nbIsIncoming ? this.edgeValue.get(edgeKey(n.row, n.pos, edge.nb.pos)) : this.edgeValue.get(edgeKey(edge.nb.row, edge.nb.pos, n.pos)))
+          .filter((v): v is string => v !== undefined)
+      );
+
+      const available = setMembers.filter(v => !usedThisSide.has(v) && !nbUsedThisSide.has(v));
+      const consistent = new Set(available.filter(v => v === nbOwn || v === nbHidden));
       if (consistent.size === 1) {
         const [value] = consistent;
         if (!this.setEdge(edge.key, value, row, pos)) return false;
+        usedThisSide.add(value);
         queue.push(edge.nb);
-      } else if (consistent.size === 0) {
+      } else if (consistent.size === 0 && available.length > 0) {
         this.contradictions.push({
           row, position: pos, expected: setMembers.join('/'), found: `${nbOwn}/${nbHidden}`,
           neighborRow: edge.nb.row, neighborPosition: edge.nb.pos,
@@ -510,58 +546,171 @@ export function resolveHiddenColorsFast(rows: InstructionRow[]): ValidityResult 
 
   search(0);
 
-  // FINAL EDGE-LEVEL PASS - same as before: a specific line can rarely
-  // still have both of a knot's two colors simultaneously consistent with
-  // its neighbor even once both knots' full pairs are known. Same
-  // tie-break, one level down.
+  // EDGE ASSIGNMENT - solved as its own separate problem once every
+  // knot's hidden color is fully finalized. For each knot's side (up to
+  // two real-knot edges), check BOTH possible pairings jointly against
+  // what each neighbor can actually still accept (not one edge at a
+  // time, which is exactly what caused real, verified bugs earlier -
+  // deciding the first edge greedily could grab the wrong option and
+  // leave the second with nothing valid left, even when swapping would
+  // have worked). Sweeps repeatedly to a fixed point, since resolving
+  // one line can immediately unlock what's available for another.
   const widths = colors.map(c => c.length);
-  const finalEdges: Record<string, string> = Object.fromEntries(solver.edgeValue);
+  const isKnot = rows.map(r => r.knots.map(k => k.isKnot));
+  const finalEdges: Record<string, string> = {};
 
-  function resolveSide(r: number, p: number, neighbors: { row: number; pos: number }[], makeKey: (nb: { row: number; pos: number }) => string) {
-    const own = colors[r][p];
-    const hid = solver.hidden[r][p];
-    if (own == null || hid == null) return;
-    const setMembers = hid === own ? [own] : [own, hid];
+  function neighborsOfSide(r: number, p: number, incoming: boolean): Ref[] {
+    if (incoming) {
+      if (r === 0) return [];
+      const out: Ref[] = [];
+      for (let q = 0; q < widths[r - 1]; q++) {
+        if (candidatePositions(q, widths[r - 1], widths[r]).includes(p)) out.push({ row: r - 1, pos: q });
+      }
+      return out;
+    }
+    if (r === rows.length - 1) return [];
+    return candidatePositions(p, widths[r], widths[r + 1]).map(q => ({ row: r + 1, pos: q }));
+  }
+  function keyForSide(r: number, p: number, incoming: boolean, nb: Ref): string {
+    return incoming ? edgeKey(nb.row, nb.pos, p) : edgeKey(r, p, nb.pos);
+  }
 
-    const unresolved = neighbors.filter(nb => finalEdges[makeKey(nb)] === undefined && rows[nb.row].knots[nb.pos].isKnot);
-    if (unresolved.length === 0) return;
-
-    const alreadyUsed = new Set(
-      neighbors.map(nb => finalEdges[makeKey(nb)]).filter((v): v is string => v !== undefined)
-    );
-    const remaining = setMembers.filter(v => !alreadyUsed.has(v) || setMembers.length === 1);
-
-    for (const nb of unresolved) {
-      const nbOwn = colors[nb.row][nb.pos];
-      const nbHidden = solver.hidden[nb.row][nb.pos];
-      const consistent = remaining.filter(v => v === nbOwn || v === nbHidden);
-      if (consistent.length === 0) continue; // shouldn't happen for a genuinely valid pattern
-      const chosen = consistent.includes(own) ? own : consistent.sort((a, b) => relativeLuminance(a) - relativeLuminance(b))[0];
-      finalEdges[makeKey(nb)] = chosen;
-      // This value is now spoken for on this side - don't hand it to the
-      // knot's OTHER still-unresolved edge too (that was the actual bug:
-      // each edge was picked independently, so a non-solid knot could end
-      // up with the SAME color on both of its outputs, which is
-      // physically impossible - two outputs must be {own, hidden}, one
-      // each, never both the same unless the knot is genuinely solid).
-      const idx = remaining.indexOf(chosen);
-      if (idx !== -1 && setMembers.length > 1) remaining.splice(idx, 1);
+  // Dots are always certain, unconditionally, both directions.
+  for (let r = 0; r < rows.length; r++) {
+    for (let p = 0; p < widths[r]; p++) {
+      if (isKnot[r][p] || colors[r][p] == null) continue;
+      const dotColor = colors[r][p]!;
+      for (const nb of neighborsOfSide(r, p, true)) finalEdges[keyForSide(r, p, true, nb)] = dotColor;
+      for (const nb of neighborsOfSide(r, p, false)) finalEdges[keyForSide(r, p, false, nb)] = dotColor;
     }
   }
 
+  function nbAcceptable(nb: Ref, incoming: boolean, value: string): boolean {
+    const nbOwn = colors[nb.row][nb.pos];
+    const nbHidden = solver.hidden[nb.row][nb.pos];
+    if (nbOwn == null || nbHidden == null) return false;
+    const nbSetMembers = nbHidden === nbOwn ? [nbOwn] : [nbOwn, nbHidden];
+    if (!nbSetMembers.includes(value)) return false;
+    const nbUsedOnItsSide = new Set(
+      neighborsOfSide(nb.row, nb.pos, !incoming)
+        .map(n2 => finalEdges[keyForSide(nb.row, nb.pos, !incoming, n2)])
+        .filter((v): v is string => v !== undefined)
+    );
+    return nbSetMembers.length === 1 || !nbUsedOnItsSide.has(value);
+  }
+
+  function tryResolveSide(r: number, p: number, incoming: boolean): boolean {
+    const own = colors[r][p];
+    const hid = solver.hidden[r][p];
+    if (own == null || hid == null) return false;
+    const allNeighbors = neighborsOfSide(r, p, incoming);
+    const realNeighbors = allNeighbors.filter(nb => isKnot[nb.row][nb.pos]);
+    const unresolved = realNeighbors.filter(nb => finalEdges[keyForSide(r, p, incoming, nb)] === undefined);
+    if (unresolved.length === 0) return false;
+
+    const setMembers = hid === own ? [own] : [own, hid];
+    // Include ALL neighbors here, not just real ones - a dot on this
+    // side already claims one specific member of {own, hidden}
+    // unconditionally, so it counts as "used" too, exactly like a
+    // real neighbor's already-assigned edge would.
+    const alreadyUsed = new Set(
+      allNeighbors.map(nb => finalEdges[keyForSide(r, p, incoming, nb)]).filter((v): v is string => v !== undefined)
+    );
+    const needed = setMembers.filter(v => setMembers.length === 1 || !alreadyUsed.has(v));
+
+    if (unresolved.length === 1) {
+      const nb = unresolved[0];
+      const options = needed.filter(v => nbAcceptable(nb, incoming, v));
+      if (options.length !== 1) return false;
+      finalEdges[keyForSide(r, p, incoming, nb)] = options[0];
+      return true;
+    }
+
+    if (unresolved.length === 2 && needed.length === 2) {
+      const [nbA, nbB] = unresolved;
+      const [v1, v2] = needed;
+      const forwardOk = nbAcceptable(nbA, incoming, v1) && nbAcceptable(nbB, incoming, v2);
+      const reverseOk = nbAcceptable(nbA, incoming, v2) && nbAcceptable(nbB, incoming, v1);
+      if (forwardOk && !reverseOk) {
+        finalEdges[keyForSide(r, p, incoming, nbA)] = v1;
+        finalEdges[keyForSide(r, p, incoming, nbB)] = v2;
+        return true;
+      }
+      if (reverseOk && !forwardOk) {
+        finalEdges[keyForSide(r, p, incoming, nbA)] = v2;
+        finalEdges[keyForSide(r, p, incoming, nbB)] = v1;
+        return true;
+      }
+      return false; // both valid (genuine ambiguity) or neither (needs more info first) - leave for now
+    }
+
+    return false;
+  }
+
+  let sweepChanged = true;
+  let sweepGuard = 0;
+  while (sweepChanged && sweepGuard < rows.length * 3 + 10) {
+    sweepChanged = false;
+    for (let r = 0; r < rows.length; r++) {
+      for (let p = 0; p < widths[r]; p++) {
+        if (!isKnot[r][p] || colors[r][p] == null) continue;
+        if (tryResolveSide(r, p, true)) sweepChanged = true;
+        if (tryResolveSide(r, p, false)) sweepChanged = true;
+      }
+    }
+    sweepGuard++;
+  }
+
+  // Whatever's left is genuinely ambiguous even with every knot's pair
+  // fully known - tie-break: prefer this knot's own color if a valid
+  // full pairing uses it, else the darkest valid option. Same joint
+  // (both-orderings-checked) approach as the sweep above, never one edge
+  // decided in isolation.
   for (let r = 0; r < rows.length; r++) {
     for (let p = 0; p < widths[r]; p++) {
-      if (!rows[r].knots[p].isKnot || colors[r][p] == null) continue;
-      if (r > 0) {
-        const parents: { row: number; pos: number }[] = [];
-        for (let q = 0; q < widths[r - 1]; q++) {
-          if (candidatePositions(q, widths[r - 1], widths[r]).includes(p)) parents.push({ row: r - 1, pos: q });
+      if (!isKnot[r][p] || colors[r][p] == null) continue;
+      for (const incoming of [true, false]) {
+        const own = colors[r][p]!;
+        const hid = solver.hidden[r][p];
+        if (hid == null) continue;
+        const setMembers = hid === own ? [own] : [own, hid];
+        const allNeighbors = neighborsOfSide(r, p, incoming);
+        const realNeighbors = allNeighbors.filter(nb => isKnot[nb.row][nb.pos]);
+        const unresolved = realNeighbors.filter(nb => finalEdges[keyForSide(r, p, incoming, nb)] === undefined);
+        if (unresolved.length === 0) continue;
+
+        const alreadyUsed = new Set(
+          allNeighbors.map(nb => finalEdges[keyForSide(r, p, incoming, nb)]).filter((v): v is string => v !== undefined)
+        );
+        const needed = setMembers.filter(v => setMembers.length === 1 || !alreadyUsed.has(v));
+
+        if (unresolved.length === 1) {
+          const nb = unresolved[0];
+          const options = needed.filter(v => nbAcceptable(nb, incoming, v));
+          const chosen = options.includes(own) ? own : (options.sort((a, b) => relativeLuminance(a) - relativeLuminance(b))[0] ?? needed[0]);
+          if (chosen != null) finalEdges[keyForSide(r, p, incoming, nb)] = chosen;
+          continue;
         }
-        resolveSide(r, p, parents, nb => edgeKey(nb.row, nb.pos, p));
-      }
-      if (r < rows.length - 1) {
-        const children = candidatePositions(p, widths[r], widths[r + 1]).map(q => ({ row: r + 1, pos: q }));
-        resolveSide(r, p, children, nb => edgeKey(r, p, nb.pos));
+
+        if (unresolved.length === 2 && needed.length === 2) {
+          const [nbA, nbB] = unresolved;
+          const [v1, v2] = needed;
+          const forwardOk = nbAcceptable(nbA, incoming, v1) && nbAcceptable(nbB, incoming, v2);
+          const reverseOk = nbAcceptable(nbA, incoming, v2) && nbAcceptable(nbB, incoming, v1);
+          let useForward = forwardOk;
+          if (forwardOk && reverseOk) {
+            useForward = v1 === own || relativeLuminance(v1) <= relativeLuminance(v2);
+          } else if (!forwardOk && !reverseOk) {
+            continue; // shouldn't happen for a genuinely valid pattern
+          }
+          if (useForward) {
+            finalEdges[keyForSide(r, p, incoming, nbA)] = v1;
+            finalEdges[keyForSide(r, p, incoming, nbB)] = v2;
+          } else {
+            finalEdges[keyForSide(r, p, incoming, nbA)] = v2;
+            finalEdges[keyForSide(r, p, incoming, nbB)] = v1;
+          }
+        }
       }
     }
   }
