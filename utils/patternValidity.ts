@@ -516,21 +516,52 @@ export function resolveHiddenColorsFast(rows: InstructionRow[]): ValidityResult 
   // tie-break, one level down.
   const widths = colors.map(c => c.length);
   const finalEdges: Record<string, string> = Object.fromEntries(solver.edgeValue);
-  for (let r = 0; r < rows.length - 1; r++) {
+
+  function resolveSide(r: number, p: number, neighbors: { row: number; pos: number }[], makeKey: (nb: { row: number; pos: number }) => string) {
+    const own = colors[r][p];
+    const hid = solver.hidden[r][p];
+    if (own == null || hid == null) return;
+    const setMembers = hid === own ? [own] : [own, hid];
+
+    const unresolved = neighbors.filter(nb => finalEdges[makeKey(nb)] === undefined && rows[nb.row].knots[nb.pos].isKnot);
+    if (unresolved.length === 0) return;
+
+    const alreadyUsed = new Set(
+      neighbors.map(nb => finalEdges[makeKey(nb)]).filter((v): v is string => v !== undefined)
+    );
+    const remaining = setMembers.filter(v => !alreadyUsed.has(v) || setMembers.length === 1);
+
+    for (const nb of unresolved) {
+      const nbOwn = colors[nb.row][nb.pos];
+      const nbHidden = solver.hidden[nb.row][nb.pos];
+      const consistent = remaining.filter(v => v === nbOwn || v === nbHidden);
+      if (consistent.length === 0) continue; // shouldn't happen for a genuinely valid pattern
+      const chosen = consistent.includes(own) ? own : consistent.sort((a, b) => relativeLuminance(a) - relativeLuminance(b))[0];
+      finalEdges[makeKey(nb)] = chosen;
+      // This value is now spoken for on this side - don't hand it to the
+      // knot's OTHER still-unresolved edge too (that was the actual bug:
+      // each edge was picked independently, so a non-solid knot could end
+      // up with the SAME color on both of its outputs, which is
+      // physically impossible - two outputs must be {own, hidden}, one
+      // each, never both the same unless the knot is genuinely solid).
+      const idx = remaining.indexOf(chosen);
+      if (idx !== -1 && setMembers.length > 1) remaining.splice(idx, 1);
+    }
+  }
+
+  for (let r = 0; r < rows.length; r++) {
     for (let p = 0; p < widths[r]; p++) {
       if (!rows[r].knots[p].isKnot || colors[r][p] == null) continue;
-      for (const q of candidatePositions(p, widths[r], widths[r + 1])) {
-        if (!rows[r + 1].knots[q].isKnot) continue;
-        const key = edgeKey(r, p, q);
-        if (finalEdges[key] !== undefined) continue;
-        const ownA = colors[r][p], hidA = solver.hidden[r][p];
-        const ownB = colors[r + 1][q], hidB = solver.hidden[r + 1][q];
-        if (ownA == null || hidA == null || ownB == null || hidB == null) continue;
-        const consistent = new Set([ownA, hidA].filter(v => v === ownB || v === hidB));
-        if (consistent.size === 0) continue;
-        finalEdges[key] = consistent.has(ownA)
-          ? ownA
-          : Array.from(consistent).sort((a, b) => relativeLuminance(a) - relativeLuminance(b))[0];
+      if (r > 0) {
+        const parents: { row: number; pos: number }[] = [];
+        for (let q = 0; q < widths[r - 1]; q++) {
+          if (candidatePositions(q, widths[r - 1], widths[r]).includes(p)) parents.push({ row: r - 1, pos: q });
+        }
+        resolveSide(r, p, parents, nb => edgeKey(nb.row, nb.pos, p));
+      }
+      if (r < rows.length - 1) {
+        const children = candidatePositions(p, widths[r], widths[r + 1]).map(q => ({ row: r + 1, pos: q }));
+        resolveSide(r, p, children, nb => edgeKey(r, p, nb.pos));
       }
     }
   }
